@@ -115,7 +115,8 @@ def test_status_rows_cover_every_credential(tmp_path: Path) -> None:
     rows = asyncio.run(gather_status(Settings(state_dir=tmp_path), live=False))
     names = [name for name, _ in rows]
     assert names[:4] == ["sso", "kerberos", "grid", "lxplus"]
-    assert {"gitlab", "indico", "jira", "mattermost", "github", "actions"} <= set(names)
+    assert {"gitlab", "indico", "jira", "github", "actions"} <= set(names)
+    assert "mattermost" not in names  # Mattermost uses the SSO session only
     assert "sso" in format_status(rows)
 
 
@@ -152,7 +153,8 @@ def test_default_setup_runs_only_core_and_lists_extras(tmp_path: Path) -> None:
     for name in ("kerberos", "lxplus", "rucio", "policy"):
         setattr(setup, f"step_{name}", lambda n=name: steps.append(n))
     setup.run([], tier="tokens")
-    assert steps == ["sso"] + ["token"] * 5
+    assert steps == ["sso"] + ["token"] * 3  # GitLab, Indico, GitHub; Jira only under --all
     steps.clear()
     setup.run([], tier="all")
     assert steps[0] == "sso" and {"kerberos", "grid", "policy"} <= set(steps)
+    assert steps.count("token") == 4  # the three read tokens plus Jira

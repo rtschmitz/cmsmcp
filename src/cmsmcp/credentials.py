@@ -6,7 +6,7 @@ One place answers "what can this installation reach right now?":
 - ``kerberos``: a ``kinit`` ticket (lxplus, EOS, silent SSO renewal).
 - ``lxplus``: password-less SSH to lxplus over the Kerberos ticket.
 - ``grid``: X.509 user certificate / VOMS proxy (DAS, DQM, Rucio).
-- personal tokens: GitLab, Indico, Jira, Mattermost, GitHub.
+- personal tokens: GitLab, Indico, GitHub; Jira only for confirmed comments.
 
 Checks never print or return secret values. ``quick`` checks are local (file
 presence, ``klist``); ``live`` checks contact the service (``cmsmcp doctor``).
@@ -75,18 +75,9 @@ TOKENS: tuple[TokenSpec, ...] = (
         "jira",
         "jira_token",
         "CERN Jira",
-        "restricted Jira projects without relying on the browser session",
+        "Jira comments (opt-in actions); reads already work through the SSO session",
         "https://its.cern.ch/jira/secure/ViewProfile.jspa?selectedTab=com.atlassian.pats.pats-plugin:jira-user-personal-access-tokens",
         "Profile -> Personal Access Tokens -> Create token, name it cmsmcp, set an expiry.",
-    ),
-    TokenSpec(
-        "mattermost",
-        "mattermost_token",
-        "Mattermost",
-        "a session-independent Mattermost login (the SSO session already works)",
-        "https://mattermost.web.cern.ch",
-        "Profile -> Security -> Personal Access Tokens (only if your account may create them). "
-        "Without one, cmsmcp uses the SSO session.",
     ),
     TokenSpec(
         "github",

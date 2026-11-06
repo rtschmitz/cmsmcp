@@ -77,15 +77,12 @@ async def mattermost_post(
     body: dict[str, Any] = {"channel_id": channel_id, "message": message}
     if root_id:
         body["root_id"] = root_id
-    headers = {"X-Requested-With": "XMLHttpRequest"}
-    token = settings.mattermost_token
     response = await client.request_action(
         approval,
         "POST",
         f"{settings.mattermost_base_url.rstrip('/')}/api/v4/posts",
         json_body=body,
-        headers=headers,
-        service_headers={"Authorization": f"Bearer {token}"} if token else None,
+        headers={"X-Requested-With": "XMLHttpRequest"},
     )
     post = _check(response, "Mattermost post")
     post_id = post.get("id")

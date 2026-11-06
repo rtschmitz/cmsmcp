@@ -58,11 +58,13 @@ COMMANDS = ("login", "connect", "setup", "status", "doctor", "logout", "audit", 
 # on demand: a tool that needs a missing credential answers with the exact
 # `cmsmcp setup <step>` to run, so nothing is asked up front.
 # Three tiers: `cmsmcp setup` = CERN SSO only; `--tokens` adds the long-lived
-# personal API tokens; `--all` adds Kerberos, lxplus, grid, Rucio and the
-# personal-data/actions policy.
+# read tokens (GitLab, Indico, GitHub); `--all` adds Kerberos, lxplus, grid,
+# Rucio, the personal-data/actions policy and the Jira token, which only the
+# opt-in Jira comment action needs (Jira and Mattermost reads use the SSO session).
 CORE_STEPS = ("sso",)
-TOKEN_STEPS = tuple(t.name for t in TOKENS)
-FULL_ONLY_STEPS = ("kerberos", "lxplus", "grid", "rucio", "policy")
+ACTION_TOKEN_STEPS = ("jira",)
+TOKEN_STEPS = tuple(t.name for t in TOKENS if t.name not in ACTION_TOKEN_STEPS)
+FULL_ONLY_STEPS = ("kerberos", "lxplus", "grid", "rucio", "policy", *ACTION_TOKEN_STEPS)
 OPTIONAL_STEPS = TOKEN_STEPS + FULL_ONLY_STEPS
 SETUP_STEPS = CORE_STEPS + OPTIONAL_STEPS
 TIERS = {"sso": CORE_STEPS, "tokens": CORE_STEPS + TOKEN_STEPS, "all": SETUP_STEPS}
@@ -141,10 +143,6 @@ async def live_token_check(settings: Settings, spec: TokenSpec) -> Check:  # noq
             "https://its.cern.ch/jira/rest/api/2/myself",
             {"Authorization": f"Bearer {token}"},
         ),
-        "mattermost": (
-            f"{settings.mattermost_base_url}/api/v4/users/me",
-            {"Authorization": f"Bearer {token}"},
-        ),
         "github": ("https://api.github.com/user", {"Authorization": f"Bearer {token}"}),
     }
     url, headers = probes[spec.name]
@@ -213,7 +211,7 @@ class Setup:
             self.io.say(
                 "\nOptional extras (set up any time; a tool that needs one will tell you):\n"
                 + "\n".join(f"  cmsmcp setup {s:<11} {OPTIONAL_GUIDE[s]}" for s in skipped)
-                + "\n  cmsmcp setup --tokens    all personal API tokens"
+                + "\n  cmsmcp setup --tokens    personal read tokens (GitLab, Indico, GitHub)"
                 + "\n  cmsmcp setup --all       everything (tokens, Kerberos, lxplus, grid, ...)"
             )
         self.io.say(
@@ -374,6 +372,7 @@ class Setup:
                 .lower()
             )
             set_option("confirm_mode", "approve" if mode.startswith("a") else "elicit")
+            self.io.say("  Jira comments also need a Jira token: `cmsmcp setup jira`.")
         else:
             set_option("actions_enabled", None)
             set_option("confirm_mode", None)
@@ -521,14 +520,14 @@ def _parser() -> argparse.ArgumentParser:
         action="store_const",
         const="tokens",
         dest="tier",
-        help="SSO + long-lived API tokens (GitLab, Indico, Jira, Mattermost, GitHub)",
+        help="SSO + long-lived read tokens (GitLab, Indico, GitHub)",
     )
     tier.add_argument(
         "--all",
         action="store_const",
         const="all",
         dest="tier",
-        help="everything: tokens, Kerberos, lxplus, grid, Rucio, personal data/actions",
+        help="everything: tokens, Kerberos, lxplus, grid, Rucio, personal data/actions, Jira token",
     )
     sub.add_parser("status", help="what is configured (local checks)")
     sub.add_parser("doctor", help="test every connection and token")

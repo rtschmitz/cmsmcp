@@ -26,7 +26,6 @@ USER_ID = "u" * 26
 FILE_ID = "f" * 26
 NEXT_ID = "n" * 26
 
-TEST_PAT = "mm-pat-secret"
 
 USER_DOC = {
     "id": USER_ID,
@@ -141,12 +140,11 @@ class Router:
         return handler(request)
 
 
-def make_client(tmp_path: Path, router: Router, *, token: str | None = None) -> SafeHttpClient:
+def make_client(tmp_path: Path, router: Router) -> SafeHttpClient:
     settings = Settings(
         state_dir=tmp_path,
         require_sso=False,
         browser_executable=None,
-        mattermost_token=token,
     )
     auth = AuthService(settings)
     transport = httpx.MockTransport(router)
@@ -620,23 +618,6 @@ async def test_download_unknown_file_is_upstream_error(tmp_path: Path) -> None:
     client = make_client(tmp_path, router)
     with pytest.raises(UpstreamError):
         await mattermost.download_file(client, client.settings, file_id=FILE_ID)
-
-
-async def test_pat_header_reaches_get_and_post(tmp_path: Path) -> None:
-    router = Router()
-    router.add("GET", "/api/v4/users/me", lambda _r: httpx.Response(200, json=USER_DOC))
-    router.add("GET", f"/api/v4/teams/{TEAM_ID}", lambda _r: httpx.Response(200, json=TEAM_DOC))
-    router.add(
-        "POST",
-        f"/api/v4/teams/{TEAM_ID}/posts/search",
-        lambda _r: httpx.Response(200, json={"order": [], "posts": {}}),
-    )
-    client = make_client(tmp_path, router, token=TEST_PAT)
-    await mattermost.get_me(client, client.settings)
-    await mattermost.search_posts(client, client.settings, team_id=TEAM_ID, terms="x")
-    assert router.requests[0].headers["Authorization"] == f"Bearer {TEST_PAT}"
-    assert router.requests[-1].headers["Authorization"] == f"Bearer {TEST_PAT}"
-    assert router.requests[-1].method == "POST"
 
 
 async def test_search_posts_fails_closed_on_unknown_channels(tmp_path: Path) -> None:

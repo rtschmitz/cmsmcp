@@ -147,8 +147,8 @@ platform lands. Testing flags: default tests are fixture-only;
   (verified), so the stored KEYCLOAK_IDENTITY completes the whole chain
   silently. Registered as a `_COOKIE_ONLY_SITES` entry with an
   `MMAUTHTOKEN`-readiness check; the shared client's lazy warm covers both
-  GETs and the search POST. Optional fallback: `CMSMCP_MATTERMOST_TOKEN`
-  personal access token as `Authorization: Bearer` (operator env only).
+  GETs and the search POST. No personal access token is used (they are
+  disabled for CERN accounts).
 - **Endpoints used**:
   - `GET /api/v4/users/me` (session probe), `GET /api/v4/users/{id}`,
     `GET /api/v4/users/username/{name}`.

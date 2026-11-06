@@ -58,7 +58,6 @@ SECRET_FIELDS = (
     "gitlab_token",
     "github_token",
     "jira_token",
-    "mattermost_token",
     "hltinfo_token",
     "glance_alcm_token",
     "glance_membership_token",
@@ -263,9 +262,8 @@ class Settings(BaseSettings):
     # Mattermost (mattermost.web.cern.ch, stock API v4): authenticates with the
     # MMAUTHTOKEN session cookie minted by the oauth/gitlab/login SSO handshake
     # (mm-auth.web.cern.ch brokers to auth.cern.ch; warmed lazily by the shared
-    # client). Optional personal access token fallback (Authorization: Bearer).
+    # client). No personal access token: they are disabled for CERN accounts.
     mattermost_base_url: str = "https://mattermost.web.cern.ch"
-    mattermost_token: str | None = None
     # DAS: serviced by the dasgoclient CLI (GSI client-certificate auth), not
     # by the SSO-cookie HTTP client. cert/key default to ~/.globus.
     dasgoclient_path: str | None = Field(default_factory=_default_dasgoclient)

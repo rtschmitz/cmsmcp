@@ -52,12 +52,11 @@ def register_mattermost_tools(  # noqa: C901 - one closure per tool
     @server.tool(
         name="mattermost_get_me",
         description=(
-            "The Mattermost user the current SSO/PAT session authenticates as "
+            "The Mattermost user the current SSO session authenticates as "
             "(mattermost.web.cern.ch) — confirms which account the other "
             "mattermost_* tools act as. SSO session required: sign in with "
             "cern_auth_sign_in first (the MMAUTHTOKEN cookie is minted "
-            "automatically); a personal access token in CMSMCP_MATTERMOST_TOKEN "
-            "is an optional fallback."
+            "automatically)."
         ),
     )
     async def mattermost_get_me() -> ToolEnvelope:

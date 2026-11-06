@@ -33,8 +33,8 @@ Endpoint type: documented public Mattermost REST API v4. Authentication is
 the ``MMAUTHTOKEN`` session cookie minted by the OAuth handshake at
 ``/oauth/gitlab/login`` (mm-auth.web.cern.ch brokers to auth.cern.ch, so the
 stored KEYCLOAK_IDENTITY completes it silently — captured/warmed through
-``cmsmcp.auth.browser._COOKIE_ONLY_SITES``); ``CMSMCP_MATTERMOST_TOKEN`` is an
-optional personal-access-token fallback sent as ``Authorization: Bearer``.
+``cmsmcp.auth.browser._COOKIE_ONLY_SITES``). No personal access token is
+needed (they are disabled for CERN accounts).
 Tool-facing pages are 1-based (the backend is 0-based). Timestamps
 are converted from epoch milliseconds to ISO-8601.
 """
@@ -87,12 +87,6 @@ def _search_allowlist(settings: Settings) -> tuple[str, ...]:
             instructions="Set it to e.g. https://mattermost.web.cern.ch.",
         )
     return (host,)
-
-
-def _service_headers(settings: Settings) -> dict[str, str] | None:
-    if settings.mattermost_token:
-        return {"Authorization": f"Bearer {settings.mattermost_token}"}
-    return None
 
 
 def _guard_session(response: SafeResponse) -> None:
@@ -225,7 +219,6 @@ async def _team_name(client: SafeHttpClient, settings: Settings, team_id: str) -
     response = await client.request(
         "GET",
         _api(settings, f"/teams/{team_id}"),
-        service_headers=_service_headers(settings),
     )
     _guard_session(response)
     payload = json_body(response, source="mattermost team lookup")
@@ -254,7 +247,6 @@ async def get_me(client: SafeHttpClient, settings: Settings) -> dict[str, Any]:
     response = await client.request(
         "GET",
         _api(settings, "/users/me"),
-        service_headers=_service_headers(settings),
     )
     _guard_session(response)
     payload = json_body(response, source="mattermost current user")
@@ -286,7 +278,6 @@ async def get_user(
     response = await client.request(
         "GET",
         _api(settings, path),
-        service_headers=_service_headers(settings),
     )
     _guard_session(response)
     payload = json_body(response, source=f"mattermost user {label}")
@@ -310,7 +301,6 @@ async def list_teams(
     response = await client.request(
         "GET",
         _api(settings, "/users/me/teams"),
-        service_headers=_service_headers(settings),
     )
     _guard_session(response)
     payload = json_body(response, source="mattermost team list")
@@ -350,7 +340,6 @@ async def list_channels(
     response = await client.request(
         "GET",
         _api(settings, f"/users/me/teams/{team_id}/channels"),
-        service_headers=_service_headers(settings),
     )
     _guard_session(response)
     payload = json_body(response, source=f"mattermost channels of team {team_id}")
@@ -412,7 +401,6 @@ async def get_channel(
     response = await client.request(
         "GET",
         _api(settings, path),
-        service_headers=_service_headers(settings),
     )
     _guard_session(response)
     payload = json_body(response, source="mattermost channel")
@@ -436,7 +424,6 @@ async def channel_type(client: SafeHttpClient, settings: Settings, channel_id: s
         response = await client.request(
             "GET",
             _api(settings, f"/channels/{channel_id}"),
-            service_headers=_service_headers(settings),
         )
         _guard_session(response)
         payload = json_body(response, source="mattermost channel")
@@ -456,9 +443,7 @@ def is_private_type(kind: str | None) -> bool:
 async def file_channel_id(client: SafeHttpClient, settings: Settings, file_id: str) -> str | None:
     """Channel an attachment belongs to (file info, else its post)."""
     file_id = _check_id(file_id, "file")
-    response = await client.request(
-        "GET", _api(settings, f"/files/{file_id}/info"), service_headers=_service_headers(settings)
-    )
+    response = await client.request("GET", _api(settings, f"/files/{file_id}/info"))
     _guard_session(response)
     info = json_body(response, source=f"mattermost file {file_id} info")
     if isinstance(info, dict) and isinstance(info.get("channel_id"), str) and info["channel_id"]:
@@ -466,9 +451,7 @@ async def file_channel_id(client: SafeHttpClient, settings: Settings, file_id: s
     post_id = info.get("post_id") if isinstance(info, dict) else None
     if not isinstance(post_id, str) or not post_id:
         return None
-    post = await client.request(
-        "GET", _api(settings, f"/posts/{post_id}"), service_headers=_service_headers(settings)
-    )
+    post = await client.request("GET", _api(settings, f"/posts/{post_id}"))
     _guard_session(post)
     data = json_body(post, source=f"mattermost post {post_id}")
     channel = data.get("channel_id") if isinstance(data, dict) else None
@@ -517,7 +500,6 @@ async def search_posts(
         },
         allowlist=_search_allowlist(settings),
         headers=_SEARCH_HEADERS,
-        service_headers=_service_headers(settings),
     )
     _guard_session(response)
     payload = json_body(response, source=f"mattermost post search in team {team_id}")
@@ -565,7 +547,6 @@ async def _team_channel_ids(client: SafeHttpClient, settings: Settings, team_id:
     response = await client.request(
         "GET",
         _api(settings, f"/users/me/teams/{team_id}/channels"),
-        service_headers=_service_headers(settings),
     )
     _guard_session(response)
     payload = json_body(response, source=f"mattermost channels of team {team_id}")
@@ -601,7 +582,6 @@ async def get_posts(
         "GET",
         _api(settings, f"/channels/{channel_id}/posts"),
         params=params,
-        service_headers=_service_headers(settings),
     )
     _guard_session(response)
     payload = json_body(response, source=f"mattermost posts of channel {channel_id}")
@@ -641,7 +621,6 @@ async def get_thread(
     response = await client.request(
         "GET",
         _api(settings, f"/posts/{post_id}/thread"),
-        service_headers=_service_headers(settings),
     )
     _guard_session(response)
     payload = json_body(response, source=f"mattermost thread of post {post_id}")
@@ -690,7 +669,6 @@ async def download_file(
     info_response = await client.request(
         "GET",
         _api(settings, f"/files/{file_id}/info"),
-        service_headers=_service_headers(settings),
     )
     _guard_session(info_response)
     info = json_body(info_response, source=f"mattermost file {file_id} info")
@@ -700,7 +678,6 @@ async def download_file(
     final = await client.download(
         _api(settings, f"/files/{file_id}"),
         Path(name),
-        service_headers=_service_headers(settings),
     )
     return {
         "source": SOURCE,

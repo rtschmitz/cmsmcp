@@ -2,7 +2,7 @@
 
 cmsmcp is one Model Context Protocol server that gives an AI agent access to the CERN and CMS services **you** can reach, as you: Indico, TWiki/CMS docs, GLANCE (CADI), CMS Talk, Mattermost, GitLab, GitHub (cms-sw), Jira, CDS, INSPIRE, DocDB, OMS/E-Log, Run Registry, DQM, HLT, DAS, McM, XSDB, Rucio, ServiceNow, EDMS, the Phonebook, and your lxplus files and HTCondor/CRAB jobs (~180 tools).
 
-- **Your access, your credentials.** CERN SSO (browser or Kerberos + 2FA) plus optional personal tokens (GitLab, Indico, Jira, Mattermost, GitHub), a Kerberos ticket for lxplus, and a grid proxy for DAS/DQM/Rucio. Secrets stay in owner-only files; the model never sees them.
+- **Your access, your credentials.** CERN SSO (browser or Kerberos + 2FA) plus optional personal tokens (GitLab, Indico, GitHub; Mattermost and Jira work from the SSO session), a Kerberos ticket for lxplus, and a grid proxy for DAS/DQM/Rucio. Secrets stay in owner-only files; the model never sees them.
 - **Read by default, act only with your confirmation.** Write tools (post to Mattermost, comment on GitLab/Jira, submit/remove HTCondor jobs, CRAB resubmit, a shell command on lxplus) exist only when you enable actions, and every single call asks you to confirm the exact payload (see the limits below).
 - **Token-efficient.** Results are compact text (not pretty-printed JSON twice), no output schemas, per-result budgets, tool profiles, an optional lazy mode, `cern_search` (many sources in one call) and `mine_overview` (your queues in one call).
 
@@ -20,9 +20,9 @@ Setup has three tiers, and nothing optional is asked up front. A tool that needs
 | Command | Sets up |
 | --- | --- |
 | `cmsmcp setup` | CERN SSO (+ checks for the browser / Kerberos dependencies) |
-| `cmsmcp setup --tokens` | + long-lived personal API tokens: GitLab, Indico, Jira, Mattermost, GitHub |
-| `cmsmcp setup --all` | + Kerberos, lxplus, grid proxy, Rucio account, personal-data and actions policy |
-| `cmsmcp setup <step>` | one step: `sso kerberos lxplus grid gitlab indico jira mattermost github rucio policy` |
+| `cmsmcp setup --tokens` | + long-lived personal read tokens: GitLab, Indico, GitHub |
+| `cmsmcp setup --all` | + Kerberos, lxplus, grid proxy, Rucio account, personal-data and actions policy, Jira token (only Jira comments need it) |
+| `cmsmcp setup <step>` | one step: `sso kerberos lxplus grid gitlab indico github rucio policy jira` |
 
 Other commands:
 
@@ -263,10 +263,8 @@ login-required (anonymous calls answer JSON `401`). Authentication is the
 `MMAUTHTOKEN` session cookie minted by the OAuth handshake at
 `/oauth/gitlab/login` (mm-auth.web.cern.ch brokers to auth.cern.ch, so it
 completes silently against the stored SSO identity): the shared client warms
-and retries it headlessly. `CMSMCP_MATTERMOST_TOKEN` (a Mattermost personal
-access token from your profile → Security → Personal Access Tokens) is an
-optional `Authorization: Bearer` fallback, injected only by the trusted HTTP
-layer. All listings take a required `team_id`/ids from earlier results; every
+and retries it headlessly. No Mattermost token is needed (personal access
+tokens are disabled for CERN accounts). All listings take a required `team_id`/ids from earlier results; every
 timestamp is converted to ISO-8601.
 
 - `mattermost_get_me` — the user the session/PAT authenticates as (also the auth probe).
@@ -527,8 +525,7 @@ Configuration uses environment variables with the `CMSMCP_` prefix. Common setti
 | `CMSMCP_WEBSITES_TOKEN` | unset | Optional Web Services portal Bearer token (normally minted headlessly from SSO) |
 | `CMSMCP_WEBSITES_CACHE_MAX_AGE_DAYS` | `30` | Inventory cache age after which searches auto-refresh |
 | `CMSMCP_MATTERMOST_BASE_URL` | `https://mattermost.web.cern.ch` | CERN Mattermost instance |
-| `CMSMCP_MATTERMOST_TOKEN` | unset | Optional Mattermost personal access token (normally the SSO-minted `MMAUTHTOKEN` cookie is used) |
-| `CMSMCP_JIRA_TOKEN` / `CMSMCP_GITHUB_TOKEN` | unset | Optional Jira / GitHub personal tokens |
+| `CMSMCP_JIRA_TOKEN` / `CMSMCP_GITHUB_TOKEN` | unset | Optional Jira personal token (needed only for the opt-in `jira_comment` action; reads use the SSO session) / GitHub token |
 | `CMSMCP_CONFIG_DIR` | `~/.config/cmsmcp` | Secret files (`secrets/`) and the setup config file (`cmsmcp.env`) |
 | `CMSMCP_OUTPUT_FORMAT` | `text` | `text` (compact) or `json` (one compact line) |
 | `CMSMCP_MAX_RESULT_CHARS` | `16000` | Per-result character budget |
