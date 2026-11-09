@@ -31,6 +31,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from cmsmcp import oscompat
 from cmsmcp.auth.service import AuthService
 from cmsmcp.config.settings import Settings, config_file, secrets_dir
 from cmsmcp.credentials import (
@@ -259,16 +260,15 @@ class Setup:
         )
         if self._keep(asyncio.run(check_kerberos(self.settings))):
             return
-        if shutil.which("kinit") is None:
-            self.io.say(
-                "  Install the Kerberos client (krb5-workstation or krb5-user), then rerun."
-            )
+        if oscompat.kerberos_tool("kinit") is None:
+            hint = oscompat.kerberos_install_hint("krb5-workstation or krb5-user")
+            self.io.say(f"  Install the Kerberos client ({hint}), then rerun.")
             return
         user = self.settings.lxplus_user or os.environ.get("USER", "")
         principal = self.io.ask(f"  CERN principal [{user}@CERN.CH]: ").strip() or f"{user}@CERN.CH"
         if "@" not in principal:
             principal = f"{principal}@CERN.CH"
-        self.io.run(["kinit", principal])
+        self.io.run([oscompat.kerberos_command("kinit"), principal])
 
     def step_lxplus(self) -> None:
         self.io.say(
@@ -307,10 +307,10 @@ class Setup:
             default=True,
         ):
             self.io.run(["voms-proxy-init", "-voms", "cms", "-rfc", "-valid", "192:00"])
-            proxy = os.environ.get("X509_USER_PROXY") or f"/tmp/x509up_u{os.getuid()}"  # noqa: S108
-            if Path(proxy).is_file():
-                set_option("grid_cert_file", proxy)
-                set_option("grid_key_file", proxy)
+            proxy = oscompat.default_proxy_path()
+            if proxy.is_file():
+                set_option("grid_cert_file", str(proxy))
+                set_option("grid_key_file", str(proxy))
                 self.io.say(f"  Using the proxy {proxy} for grid services.")
 
     def step_token(self, spec: TokenSpec) -> None:
@@ -389,9 +389,10 @@ def dependency_problems(settings: Settings) -> list[str]:
     try:
         import gssapi  # noqa: F401, PLC0415
     except ImportError:
+        build = oscompat.kerberos_extra_hint("needs libkrb5-dev")
         problems.append(
             "Kerberos login needs the optional extra: install with `cmsmcp[kerberos]` "
-            "(needs libkrb5-dev); browser sign-in works without it"
+            f"({build}); browser sign-in works without it"
         )
     return problems
 
@@ -400,6 +401,9 @@ def dependency_problems(settings: Settings) -> list[str]:
 def cmd_connect(settings: Settings, *, io: IO | None = None) -> int:
     """Open the reusable lxplus SSH connection (asks for the 2FA code once)."""
     io = io or IO()
+    if unsupported := oscompat.lxplus_unsupported():
+        io.say(unsupported)
+        return 2
     target = lxplus_target(settings)
     if target is None or settings.ssh_executable is None:
         io.say("Set your CERN username first: `cmsmcp setup lxplus`.")
@@ -409,7 +413,7 @@ def cmd_connect(settings: Settings, *, io: IO | None = None) -> int:
         return 0
     if asyncio.run(check_kerberos(settings)).state != OK:
         io.say("No valid Kerberos ticket: running kinit first.")
-        io.run(["kinit", f"{settings.lxplus_user}@CERN.CH"])
+        io.run([oscompat.kerberos_command("kinit"), f"{settings.lxplus_user}@CERN.CH"])
     io.say(f"Connecting to {target}; enter your CERN 2FA code if asked.")
     code = io.run(
         [settings.ssh_executable, *ssh_options(settings, interactive=True), "-fN", target]

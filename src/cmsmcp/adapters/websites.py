@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from cmsmcp import oscompat
 from cmsmcp.adapters.common import json_body
 from cmsmcp.config.settings import Settings
 from cmsmcp.contracts.errors import CMSMCPError, InvalidInputError, UpstreamError
@@ -234,7 +235,7 @@ def _rebuild_cache(
     finally:
         con.close()
     os.chmod(tmp_path, 0o600)
-    os.replace(tmp_path, db_path)
+    oscompat.replace_file(tmp_path, db_path)
     return {"site_count": len(rows), "wsp_count": len(wsp_rows), "ctlog_count": len(ct_names)}
 
 

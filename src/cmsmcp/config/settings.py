@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import stat
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -19,6 +18,8 @@ from pydantic_settings import (
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
+
+from cmsmcp import oscompat
 
 DEFAULT_IDENTITY_COOKIES = ("KEYCLOAK_IDENTITY",)
 DEFAULT_ALLOWED_HOSTS = (
@@ -43,12 +44,14 @@ MAX_SSO_TIMEOUT_SECONDS = 900
 
 
 def default_config_dir() -> Path:
-    """``$CMSMCP_CONFIG_DIR`` or ``$XDG_CONFIG_HOME/cmsmcp`` (``~/.config/cmsmcp``)."""
+    """``$CMSMCP_CONFIG_DIR`` or ``$XDG_CONFIG_HOME/cmsmcp`` (``~/.config/cmsmcp``).
+
+    Windows (unsupported) falls back to ``%APPDATA%\\cmsmcp``.
+    """
     explicit = os.environ.get("CMSMCP_CONFIG_DIR")
     if explicit:
         return Path(explicit).expanduser()
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    return (Path(xdg) if xdg else Path.home() / ".config") / "cmsmcp"
+    return oscompat.config_root() / "cmsmcp"
 
 
 # Settings fields that hold credentials. ``cmsmcp setup`` writes each one to
@@ -87,7 +90,7 @@ class SecretFilesSource(PydanticBaseSettingsSource):
             return None, field_name, False
         path = secrets_dir() / field_name
         try:
-            if path.stat().st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+            if oscompat.shared_with_others(path.stat().st_mode):
                 return None, field_name, False
             value = path.read_text().strip()
         except OSError:
@@ -104,17 +107,13 @@ class SecretFilesSource(PydanticBaseSettingsSource):
 
 
 def _default_state_dir() -> Path:
-    xdg_state = os.environ.get("XDG_STATE_HOME")
-    root = Path(xdg_state) if xdg_state else Path.home() / ".local" / "state"
-    return root / "cmsmcp"
+    return oscompat.state_root() / "cmsmcp"
 
 
 def _default_browser_executable() -> str | None:
-    for name in ("chromium", "chromium-browser", "google-chrome-stable", "google-chrome"):
-        path = shutil.which(name)
-        if path:
-            return path
-    return None
+    return oscompat.find_browser(
+        ("chromium", "chromium-browser", "google-chrome-stable", "google-chrome")
+    )
 
 
 def _default_dasgoclient() -> str | None:

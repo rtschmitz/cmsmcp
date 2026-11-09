@@ -29,6 +29,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from cmsmcp import oscompat
 from cmsmcp.config.settings import Settings
 from cmsmcp.contracts.errors import InvalidInputError, UpstreamError, setup_hint
 from cmsmcp.contracts.results import SearchResult
@@ -85,6 +86,7 @@ def make_runner(settings: Settings) -> Callable[[Sequence[str]], Awaitable[Comma
         "HOME": os.environ.get("HOME", str(settings.state_dir)),
         "X509_USER_CERT": str(cert),
         "X509_USER_KEY": str(key),
+        **oscompat.extra_subprocess_env(),
     }
     return DasGoRunner(
         binary=binary,

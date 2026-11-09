@@ -15,7 +15,6 @@ presence, ``klist``); ``live`` checks contact the service (``cmsmcp doctor``).
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 import shutil
 import time
@@ -23,6 +22,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from cmsmcp import oscompat
 from cmsmcp.auth.service import AuthService
 from cmsmcp.config.settings import Settings, secrets_dir
 from cmsmcp.net.proc import run_command
@@ -106,9 +106,10 @@ def check_sso(settings: Settings) -> Check:
 
 
 async def check_kerberos(settings: Settings) -> Check:  # noqa: ARG001 - uniform signature
-    klist = shutil.which("klist")
+    klist = oscompat.kerberos_tool("klist")
     if klist is None:
-        return Check(MISSING, "klist not installed (install krb5-workstation / krb5-user)")
+        hint = oscompat.kerberos_install_hint("install krb5-workstation / krb5-user")
+        return Check(MISSING, f"klist not installed ({hint})")
     valid = await run_command([klist, "-s"], timeout_seconds=10)
     listing = await run_command([klist], timeout_seconds=10)
     principal = re.search(rb"[Pp]rincipal:\s*(\S+)", listing.stdout)
@@ -121,8 +122,7 @@ async def check_kerberos(settings: Settings) -> Check:  # noqa: ARG001 - uniform
 
 
 def _proxy_path() -> Path:
-    explicit = os.environ.get("X509_USER_PROXY")
-    return Path(explicit) if explicit else Path(f"/tmp/x509up_u{os.getuid()}")  # noqa: S108
+    return oscompat.default_proxy_path()
 
 
 async def _cert_end(path: Path) -> float | None:
@@ -163,7 +163,7 @@ async def check_grid(settings: Settings) -> Check:
 def check_token(settings: Settings, spec: TokenSpec) -> Check:
     value = getattr(settings, spec.field)
     path = secrets_dir() / spec.field
-    if path.exists() and path.stat().st_mode & 0o077:
+    if path.exists() and oscompat.shared_with_others(path.stat().st_mode):
         return Check(FAIL, f"{path} is readable by others: chmod 600 it")
     if not value:
         return Check(MISSING, f"not set (optional): `cmsmcp setup {spec.name}`")
@@ -186,7 +186,7 @@ def lxplus_target(settings: Settings) -> str | None:
 async def lxplus_master_alive(settings: Settings) -> bool:
     """Whether the reusable lxplus SSH connection (``cmsmcp connect``) is open."""
     target = lxplus_target(settings)
-    if target is None or settings.ssh_executable is None:
+    if target is None or settings.ssh_executable is None or oscompat.lxplus_unsupported():
         return False
     result = await run_command(
         [settings.ssh_executable, *ssh_options(settings), "-O", "check", target],
@@ -196,6 +196,8 @@ async def lxplus_master_alive(settings: Settings) -> bool:
 
 
 async def check_lxplus(settings: Settings) -> Check:
+    if unsupported := oscompat.lxplus_unsupported():
+        return Check(MISSING, unsupported)
     if settings.ssh_executable is None:
         return Check(MISSING, "ssh not installed")
     target = lxplus_target(settings)

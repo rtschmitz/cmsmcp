@@ -29,6 +29,7 @@ from urllib.parse import parse_qsl, urlsplit
 import httpx
 from pydantic import BaseModel, Field
 
+from cmsmcp import oscompat
 from cmsmcp.config.settings import Settings
 from cmsmcp.contracts.errors import SessionStoreError, UpstreamError
 from cmsmcp.net.safety import host_matches, validate_url
@@ -169,7 +170,7 @@ class ServiceTokenStore:
                 with os.fdopen(fd, "w", encoding="utf-8") as handle:
                     json.dump(payload, handle, indent=2)
                     handle.write("\n")
-                os.replace(temporary_path, self.path)
+                oscompat.replace_file(temporary_path, self.path)
                 os.chmod(self.path, 0o600)
             finally:
                 if temporary_path.exists():

@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field
 
+from cmsmcp import oscompat
 from cmsmcp.contracts.errors import SessionStoreError
 from cmsmcp.net.safety import host_matches
 
@@ -223,7 +224,7 @@ class SessionStore:
                 with os.fdopen(fd, "w", encoding="utf-8") as handle:
                     handle.write(record.model_dump_json(indent=2))
                     handle.write("\n")
-                os.replace(temporary_path, self.path)
+                oscompat.replace_file(temporary_path, self.path)
                 os.chmod(self.path, 0o600)
             finally:
                 if temporary_path.exists():

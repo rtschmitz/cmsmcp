@@ -17,11 +17,11 @@ from __future__ import annotations
 
 import re
 import shlex
-import shutil
 import time
 from pathlib import Path
 from typing import Any
 
+from cmsmcp import oscompat
 from cmsmcp.config.settings import Settings
 from cmsmcp.contracts.errors import (
     AuthRequiredError,
@@ -123,6 +123,8 @@ def check_generic_command(command: str) -> str:
 
 
 def _target(settings: Settings) -> str:
+    if unsupported := oscompat.lxplus_unsupported():
+        raise UpstreamError(unsupported)
     if not settings.lxplus_user:
         raise InvalidInputError(
             "lxplus access is not configured",
@@ -137,7 +139,7 @@ async def _ensure_ticket() -> None:
     global _ticket_checked_at  # noqa: PLW0603 - process-wide short cache
     if time.monotonic() - _ticket_checked_at < _TICKET_CACHE_SECONDS:
         return
-    klist = shutil.which("klist")
+    klist = oscompat.kerberos_tool("klist")
     if klist is None or (await run_command([klist, "-s"], timeout_seconds=10)).exit_code != 0:
         error = AuthRequiredError("no valid Kerberos ticket for lxplus")
         error.instructions = (
@@ -254,7 +256,7 @@ async def download_file(settings: Settings, *, path: str) -> dict[str, Any]:
             f"could not read {path}: {result.stderr.decode(errors='replace').strip()[-300:]}"
         )
     settings.ensure_directories()
-    target = settings.download_dir / Path(path).name
+    target = settings.download_dir / oscompat.safe_filename(Path(path).name)
     stem, suffix, n = target.stem, target.suffix, 1
     while target.exists():
         target = settings.download_dir / f"{stem}-{n}{suffix}"

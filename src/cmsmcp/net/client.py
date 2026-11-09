@@ -14,6 +14,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
+from cmsmcp import oscompat
 from cmsmcp.auth.browser import cookie_site_url_for_host
 from cmsmcp.auth.service import AuthService
 from cmsmcp.config.settings import Settings
@@ -96,9 +97,10 @@ class SafeHttpClient:
         self._owned_client = client is None
         # System CA store (not certifi): some CERN hosts, e.g. cms-docdb.cern.ch,
         # serve host certificates issued by the CERN Grid Certification
-        # Authority, which is absent from the bundled certifi roots.
+        # Authority, which is absent from the bundled certifi roots. On
+        # macOS/Windows oscompat adds certifi plus the bundled CERN CAs.
         self._client = client or httpx.AsyncClient(
-            follow_redirects=False, trust_env=False, verify=ssl.create_default_context()
+            follow_redirects=False, trust_env=False, verify=oscompat.trust_context()
         )
         self._grid_client: httpx.AsyncClient | None = None
 
@@ -139,7 +141,7 @@ class SafeHttpClient:
                     f"Grid client certificate files are missing ({cert}, {key})",
                     instructions=setup_hint("grid", "Grid access (certificate or VOMS proxy)"),
                 )
-            context = ssl.create_default_context()
+            context = oscompat.trust_context()
             try:
                 context.load_cert_chain(str(cert), str(key))
             except (ssl.SSLError, OSError, ValueError) as exc:
@@ -363,7 +365,7 @@ class SafeHttpClient:
             if destination is None
             else destination
             if destination.is_absolute()
-            else root / destination
+            else root / Path(*(oscompat.safe_filename(part) for part in destination.parts))
         )
         final = candidate.resolve()
         if final == root or not final.is_relative_to(root):
