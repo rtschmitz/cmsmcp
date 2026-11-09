@@ -36,7 +36,7 @@ Other commands:
 | `cmsmcp audit [-n N]` | local log of tool calls (owner-only file) |
 | `cmsmcp logout NAME… / --all [--purge]` | remove stored credentials (and logs/caches/downloads) |
 
-Secrets live in `~/.config/cmsmcp/secrets/<field>` (mode 0600, ignored if readable by others); non-secret choices in `~/.config/cmsmcp/cmsmcp.env`. Environment variables (`CMSMCP_*`) override both. Nothing is read from the MCP client's working directory.
+Secrets live in `~/.config/cmsmcp/secrets/<field>` (mode 0600, ignored if readable by others); non-secret choices in `~/.config/cmsmcp/cmsmcp.env`. Environment variables (`CMSMCP_*`) override both. Nothing is read from the MCP client's working directory. (Linux paths; macOS and Windows are unsupported, see [Platform support](#platform-support).)
 
 ## Using it efficiently
 
@@ -97,6 +97,51 @@ Having installed on the systems tools for document manipulation like pandoc, sof
 - Python 3.12 or newer and [uv](https://docs.astral.sh/uv/)
 - Chromium/Chrome (or another Playwright-compatible browser) for browser sign-in and SSO-rendered pages
 - Optional: `kinit`/`klist` (Kerberos), `ssh` (lxplus), the `kerberos` extra (`cmsmcp login`), a grid certificate / `voms-proxy-init`, `dasgoclient`
+
+## Platform support
+
+**Linux is the only supported platform.** macOS and Windows are **unsupported**. They get best-effort accommodations (`src/cmsmcp/oscompat.py`, which returns the unchanged Linux behaviour on Linux), checked only by unit tests that simulate those platforms. Nobody has run cmsmcp on a real Mac or Windows machine, so expect rough edges.
+
+| | Linux (supported) | macOS (unsupported) | Windows (unsupported) |
+| --- | --- | --- | --- |
+| Browser SSO, web/API tools | yes | expected to work | expected to work |
+| Config / state directories | `~/.config/cmsmcp`, `~/.local/state/cmsmcp` | same | `%APPDATA%\cmsmcp`, `%LOCALAPPDATA%\cmsmcp` |
+| Secret files | mode 0600; ignored if group/other-readable | same | no POSIX modes: protected only by your user-profile ACLs |
+| TLS trust | system CA store | system store + certifi + bundled CERN root/grid CAs | same as macOS |
+| `cmsmcp login` (Kerberos + 2FA) | `kerberos` extra (builds against `libkrb5-dev`) | prebuilt `gssapi` wheel; Heimdal `kinit` ships with macOS | prebuilt `gssapi` wheel + MIT Kerberos for Windows |
+| lxplus tools, `cmsmcp connect` | yes | expected to work (OpenSSH ControlMaster) | **not available**: run cmsmcp in WSL |
+| Grid proxy, DAS (`dasgoclient`) | yes | if you install the grid tools | no `voms-proxy-init`; use a cert/key or a proxy made elsewhere |
+
+Bundled CAs: the Windows certificate store and macOS Pythons (uv-managed, python.org) do not include the CERN Grid CA, which signs hosts such as `cms-docdb.cern.ch` and `cmsweb.cern.ch`. On those platforms cmsmcp adds `src/cmsmcp/cern_ca.pem` (CERN Root CA 2/3 and Grid CA 1/2, from [cafiles.cern.ch](https://cafiles.cern.ch/cafiles/), fingerprints in the file header) on top of certifi. Linux keeps using the system store only.
+
+### macOS setup (unsupported)
+
+```bash
+brew install uv                               # or https://docs.astral.sh/uv/
+uv tool install --force /path/to/cmsmcp
+cmsmcp setup
+```
+
+- **Browser:** Google Chrome, Chromium or Microsoft Edge in `/Applications` or `~/Applications` is found automatically. For any other browser, set `CMSMCP_BROWSER_EXECUTABLE` to the binary inside the `.app` bundle (for example `.../Contents/MacOS/...`).
+- **Kerberos (optional):** macOS ships Heimdal `kinit`/`klist`. Check that `kinit <username>@CERN.CH` works; if it doesn't, add the `CERN.CH` realm to `/etc/krb5.conf`. Then use `uv tool install --force '/path/to/cmsmcp[kerberos]'` for `cmsmcp login` (no compiler needed).
+- **lxplus (optional):** `cmsmcp setup lxplus`, then `cmsmcp connect` as on Linux.
+- **Grid (optional):** put `usercert.pem`/`userkey.pem` in `~/.globus`. `voms-proxy-init` and `dasgoclient` are not part of macOS, so DAS/DQM/Rucio need you to install the grid tools yourself, or to point `CMSMCP_GRID_CERT_FILE`/`CMSMCP_GRID_KEY_FILE` at a proxy copied from lxplus.
+
+### Windows setup (unsupported)
+
+Run these in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+uv tool install --force C:\path\to\cmsmcp
+cmsmcp setup
+```
+
+- **Browser:** Chrome, Chromium or Edge under `Program Files`, `Program Files (x86)` or `%LOCALAPPDATA%` is found automatically. Edge comes with Windows, so browser sign-in normally needs no extra install.
+- **Files:** config is in `%APPDATA%\cmsmcp` (secrets in `secrets\`), state and downloads in `%LOCALAPPDATA%\cmsmcp`. Windows has no 0600 mode: these files are private only through your user profile's ACLs, so don't use cmsmcp on a shared account. Downloaded filenames have characters Windows rejects (`:*?"<>|`) replaced, and device names such as `CON` are prefixed with `_`.
+- **Kerberos login (optional):** install [MIT Kerberos for Windows](https://web.mit.edu/kerberos/dist/), run its `kinit <username>@CERN.CH`, then `uv tool install --force "C:\path\to\cmsmcp[kerberos]"` for `cmsmcp login`. cmsmcp uses MIT's `klist`/`kinit` and ignores `C:\Windows\System32\klist.exe`, which shows Windows logon tickets instead.
+- **lxplus is not available on native Windows.** cmsmcp keeps one OpenSSH ControlMaster connection open (you enter the 2FA code once), and Windows OpenSSH has no ControlMaster. lxplus tools and `cmsmcp connect` say so and point to WSL. To use them, install cmsmcp inside WSL (Ubuntu) and follow the Linux instructions; your MCP client can launch it with command `wsl.exe` and args `-e bash -lc cmsmcp` (the login shell puts `~/.local/bin` on PATH).
+- **Grid / DAS:** `voms-proxy-init` and `dasgoclient` are not available. Point `CMSMCP_GRID_CERT_FILE`/`CMSMCP_GRID_KEY_FILE` at a passphrase-less proxy made on lxplus for DQM/Rucio, or use WSL.
 
 ## Auth and bootstrap tools
 
