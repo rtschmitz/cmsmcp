@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# claude-remote — run Claude Code locally against a directory on a remote host.
+# Nothing is installed on the remote: files are mounted via sshfs, commands run via ssh.
+#
+# usage:  claude-remote HOST:/absolute/path [extra claude args...]
+#   HOST can be an alias from ~/.ssh/config or user@hostname.
+#
+# Standalone (independent of the cmsmcp server). Linux and macOS; see contrib/README.md.
+# The remote is mounted at ~/remote/<host>_<path> and unmounted when claude exits.
+# Extra sshfs options: CLAUDE_REMOTE_SSHFS_OPTS="opt1,opt2" (comma-separated).
+set -euo pipefail
+
+usage() { echo "usage: claude-remote HOST:/absolute/path [claude args...]" >&2; exit 1; }
+[[ $# -ge 1 && "$1" == *:* ]] || usage
+target=$1; shift
+host=${target%%:*}
+rpath=${target#*:}
+[[ -n "$host" && "$rpath" == /* ]] || usage
+
+os=$(uname -s)
+case "$os" in
+  Linux)
+    sshfs_hint="sudo apt install sshfs   (Fedora/RHEL/Alma: sudo dnf install fuse-sshfs)"
+    deps="ssh sshfs mountpoint claude" ;;
+  Darwin)
+    sshfs_hint="brew install macos-fuse-t/homebrew-cask/fuse-t-sshfs   (or macFUSE + sshfs; see contrib/README.md)"
+    deps="ssh sshfs umount diskutil claude" ;;
+  *) echo "unsupported OS: $os (Linux or macOS only)" >&2; exit 1 ;;
+esac
+
+for c in $deps; do
+  command -v "$c" >/dev/null && continue
+  echo "missing dependency: $c" >&2
+  [[ "$c" == sshfs ]] && echo "  install it with: $sshfs_hint" >&2
+  exit 1
+done
+if [[ "$os" == Linux ]]; then
+  fusermount=$(command -v fusermount3 || command -v fusermount) \
+    || { echo "missing dependency: fusermount3 (fuse3) or fusermount (fuse)" >&2; exit 1; }
+fi
+
+is_mounted() {
+  if [[ "$os" == Linux ]]; then
+    mountpoint -q "$1" 2>/dev/null
+  else
+    # macOS has no mountpoint(1); match the "<src> on <dir> (<type>, ...)" line of mount(8).
+    [[ "$(mount)" == *" on $1 ("* ]]
+  fi
+}
+
+unmount() {
+  if [[ "$os" == Linux ]]; then
+    "$fusermount" -u "$1"
+  else
+    umount "$1" 2>/dev/null || diskutil unmount force "$1" >/dev/null
+  fi
+}
+
+sock="$HOME/.ssh/claude-remote-${host//[^A-Za-z0-9._-]/_}.sock"
+mnt="$HOME/remote/${host//[^A-Za-z0-9._-]/_}${rpath//\//_}"
+mkdir -p "$mnt" "$HOME/.ssh"
+
+# 1. One shared SSH connection (you authenticate once; 2FA/Kerberos prompts happen here).
+started_master=0
+if ! ssh -S "$sock" -O check "$host" 2>/dev/null; then
+  ssh -M -S "$sock" -o ControlPersist=yes -o ServerAliveInterval=15 -fN "$host"
+  started_master=1
+fi
+
+# 2. Mount the remote directory over that connection.
+mounted_here=0
+if ! is_mounted "$mnt"; then
+  sshfs "$host:$rpath" "$mnt" \
+    -o ssh_command="ssh -S $sock" \
+    -o "reconnect,ServerAliveInterval=15,follow_symlinks${CLAUDE_REMOTE_SSHFS_OPTS:+,$CLAUDE_REMOTE_SSHFS_OPTS}"
+  mounted_here=1
+fi
+
+cleanup() {
+  cd /
+  (( mounted_here )) && unmount "$mnt" 2>/dev/null || true
+  (( started_master )) && ssh -S "$sock" -O exit "$host" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+prompt="You are working on a REMOTE project. The current directory is an sshfs mount of ${host}:${rpath}.
+- Read and edit files normally through the mount.
+- Run ALL commands (build, test, git, grep/find over large trees, anything needing the remote environment) on the remote with:
+    ssh -S ${sock} ${host} 'cd ${rpath} && <command>'
+  For a subdirectory, cd to the matching path under ${rpath}.
+- Do not run builds, git, or environment-specific tools locally; the local machine does not have the remote software stack."
+
+echo "Remote mounted at: $mnt"
+echo "Open it in an editor from another terminal:  vim $mnt"
+cd "$mnt"
+claude --append-system-prompt "$prompt" "$@"

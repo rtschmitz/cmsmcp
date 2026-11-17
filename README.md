@@ -531,6 +531,10 @@ lxplus asks for a second factor after Kerberos, so cmsmcp never logs in unattend
 - Actions (confirmed): `lxplus_condor_submit` (own area; hash + first lines confirmed), `lxplus_condor_remove`, `lxplus_crab_resubmit` (own area), `lxplus_run` (one shell command; a best-effort filter refuses visibly credential-touching commands).
 - Paths are restricted to `/eos`, `/afs`, `/cvmfs` without traversal, never credential files or `~/private`; every remote argument is shell-quoted; CRAB and submit files run only from your own areas.
 
+### Claude Code on a remote directory (`contrib/claude-remote`)
+
+A standalone helper, separate from the server: `claude-remote HOST:/abs/path` runs Claude Code locally against a directory on lxplus (or any SSH host). It opens one SSH control master (you authenticate once), mounts the path with sshfs, and tells Claude to edit files through the mount and run every command on the remote over that connection. Nothing is installed remotely. Linux and macOS (FUSE-T or macFUSE); needs `sshfs` and `claude`. Install, lxplus setup and troubleshooting: [`contrib/README.md`](contrib/README.md).
+
 ## GitHub tools (api.github.com; cms-sw/cmssw by default)
 
 - `github_search` (PRs, issues; code with a token), `github_get_thread` (PR/issue with discussion, bots skipped, review comments with paths, merge state and files), `github_get_file` (numbered 300-line windows at a ref). Anonymous works (rate-limited); `cmsmcp setup github` adds a read-only fine-grained token. CERN cookies are never sent.
