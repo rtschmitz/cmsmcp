@@ -37,7 +37,7 @@ from pydantic import Field
 
 from cmsmcp import paging
 from cmsmcp.config.settings import Settings
-from cmsmcp.contracts.results import ToolEnvelope
+from cmsmcp.contracts.results import ToolEnvelope, WithImages
 from cmsmcp.output import budget, cut_point, render_envelope
 from cmsmcp.policy import ACT_EFFECTS, READ_EFFECTS, Effect, Policy
 from cmsmcp.routing import GROUP_GUIDE
@@ -199,7 +199,7 @@ class CmsMcpServer(MCPServer):
         paged = name not in _UNPAGED
 
         @functools.wraps(fn)
-        async def wrapped(*args: Any, **kwargs: Any) -> str:
+        async def wrapped(*args: Any, **kwargs: Any) -> str | list[Any]:
             started = time.monotonic()
             try:
                 result = fn(*args, **kwargs)
@@ -207,6 +207,9 @@ class CmsMcpServer(MCPServer):
                     result = await result
             except Exception as exc:  # adapter bug or policy refusal: never crash the session
                 result = failure(exc)
+            images: tuple[Any, ...] = ()
+            if isinstance(result, WithImages):
+                result, images = result.result, result.images
             ok = not (isinstance(result, ToolEnvelope) and result.status == "error")
             if ok and effect in READ_EFFECTS and label:
                 policy.note_read(group)
@@ -227,9 +230,10 @@ class CmsMcpServer(MCPServer):
                 audited,
                 status="ok" if ok else (error_code or "error"),
                 elapsed=time.monotonic() - started,
-                extra={"chars": len(text)},
+                extra={"chars": len(text), **({"images": len(images)} if images else {})},
             )
-            return text
+            # Text first (label, caption, paging note), then the images.
+            return [text, *images] if images else text
 
         return wrapped
 
@@ -409,7 +413,7 @@ class CmsMcpServer(MCPServer):
             arguments: Annotated[
                 dict[str, Any] | None, Field(description="Tool arguments.")
             ] = None,
-        ) -> str:
+        ) -> str | WithImages:
             return await self._call_hidden(name, arguments or {}, ctx)
 
     def _hidden_infos(self) -> list[ToolInfo]:
@@ -450,7 +454,9 @@ class CmsMcpServer(MCPServer):
                 )
         return f"Unknown tool {name!r}; use cmsmcp_find_tools."
 
-    async def _call_hidden(self, name: str, arguments: dict[str, Any], ctx: Context) -> str:
+    async def _call_hidden(
+        self, name: str, arguments: dict[str, Any], ctx: Context
+    ) -> str | WithImages:
         if self._backstage is None or name not in self.tool_infos:
             return f"ERROR INVALID_INPUT: unknown tool {name!r}; use cmsmcp_find_tools."
         try:
@@ -458,4 +464,6 @@ class CmsMcpServer(MCPServer):
         except Exception as exc:  # argument validation errors from the SDK
             return f"ERROR INVALID_INPUT: {exc}"
         content = getattr(result, "content", None) or []
-        return "\n".join(getattr(block, "text", "") for block in content) or "ok"
+        text = "\n".join(getattr(b, "text", "") for b in content if b.type == "text") or "ok"
+        images = tuple(b for b in content if b.type == "image")
+        return WithImages(text, images) if images else text

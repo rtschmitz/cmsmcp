@@ -9,6 +9,7 @@ then search the full text (:func:`find_passages`) or read on from any offset.
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 
 from cmsmcp.output import cut_point
 
@@ -72,6 +73,9 @@ def find_passages(text: str, query: str, *, start: int, max_chars: int) -> tuple
     matches = list(_pattern(query).finditer(text, start))
     if not matches:
         return f'find "{query}": no matches after offset {start} of {len(text)} chars', None
+    # Each passage is labelled with the heading it falls under (page, section).
+    headings = [(m.start(), m.group(0).strip()) for m in _HEADING_RE.finditer(text)]
+    heading_starts = [pos for pos, _ in headings]
     # [lo, hi, match starts]; overlapping windows merge.
     windows: list[tuple[int, int, list[int]]] = []
     for match in matches:
@@ -89,7 +93,9 @@ def find_passages(text: str, query: str, *, start: int, max_chars: int) -> tuple
             resume = starts[0]
             break
         end = min(hi, cut_point(text, lo, max_chars - used))
-        parts.append(f"── @{lo} ──\n{text[lo:end].strip()}")
+        under = bisect_right(heading_starts, lo) - 1
+        where = f" · under {headings[under][1]}" if under >= 0 else ""
+        parts.append(f"── @{lo}{where} ──\n{text[lo:end].strip()}")
         used += end - lo
         shown += sum(1 for pos in starts if pos < end)
         if end < hi:  # budget ran out inside this window

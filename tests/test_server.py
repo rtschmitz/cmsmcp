@@ -181,6 +181,8 @@ TWIKI_TOOLS = {
     "twiki_download_attachment",
 }
 PDFTOOLS_TOOLS = {
+    "pdf_get_text",
+    "pdf_view_pages",
     "pdf_probe_page",
     "pdf_crop_figure",
     "pdf_render_page",
@@ -469,6 +471,8 @@ ADAPTER_CALLS: dict[str, dict[str, Any]] = {
     "cmsonline_elog_download_attachment": {
         "attachment_url": "https://cmsonline.cern.ch/Elog/htdocs/data/495/a.png"
     },
+    "pdf_get_text": {"pdf_path": "paper.pdf"},
+    "pdf_view_pages": {"pdf_path": "paper.pdf", "pages": "1"},
     "pdf_probe_page": {"pdf_path": "paper.pdf", "page": 1},
     "pdf_crop_figure": {"pdf_path": "paper.pdf", "page": 1, "bbox": [0, 0, 100, 100]},
     "pdf_render_page": {"pdf_path": "paper.pdf", "page": 1},

@@ -477,13 +477,22 @@ Generic MkDocs (Material) reader: the site search index drives search/listing, p
 - `mkdocs_get_page` — one page as plain text (code/tables preserved).
 - `mkdocs_download_file` — bounded download of a static asset (plot/PDF/ROOT file) hosted on a docs site.
 
-## Local PDF figure tools (PyMuPDF, no network)
+## Local PDF tools (PyMuPDF, no network)
 
-Local post-processing for PDFs fetched with the `*_download_*` tools (or any local PDF): geometry probing to derive a crop box, vector-preserving cropping, and raster rendering for visual verification. No network I/O; outputs stay inside cmsmcp download storage under the usual size caps. Pages are numbered from 1 (pdftotext convention).
+Reading and post-processing for PDFs fetched with the `*_download_*` tools (slides from `indico_download_file`, notes, papers, or any local PDF). No network I/O; outputs stay inside cmsmcp download storage under the usual size caps. Pages are numbered from 1 (pdftotext convention).
+
+Two reading routes, cheapest first:
+
+- `pdf_get_text` — the text of every page (or `pages="3-5,9"`) under `# Page N — <slide title>` headings; pages carrying plots/diagrams are marked `[figure]` and listed in `figure_pages`; pages with no text layer (scans) are listed too. A long deck arrives as a skim whose outline lists the remaining slides by title, so `cmsmcp_read_more(find="…")` finds a passage (labelled with its page) and an outline offset opens one slide.
+- `pdf_view_pages` — full context: up to 8 pages per call returned **inline as images** (plus each page's text), sized to what the model uses (long edge ≤1568 px, ≤1.15 MP ≈ 1.5k tokens per page; `detail="low"` ≤0.4 MP ≈ 0.5k). Use it for the `[figure]` pages that matter, not to read a whole document.
+
+Inline images are the one exception to "downloads return a path": they are bounded renders, PNG or JPEG (whichever is smaller), returned as MCP image content after the text block; clients without image support still get the text.
+
+Figure extraction:
 
 - `pdf_probe_page` — text blocks, embedded-image boxes, and union bounds of vector drawings for one page, plus combined `clip_hints`. Check `drawings_union` before cropping: dashed frames/plot axes can extend below the last text block.
 - `pdf_crop_figure` — crops one page region into a new single-page PDF via `show_pdf_page`, so drawings stay vector and text stays selectable (no rasterization). Optional plain `output_name`.
-- `pdf_render_page` — rasterizes a page or a clipped region to PNG for visual verification (`dpi` 1–600, default 150; re-render higher for pale figures before concluding they are empty).
+- `pdf_render_page` — rasterizes a page or a clipped region to PNG for visual verification (`dpi` 1–600, default 150; re-render higher for pale figures before concluding they are empty). The PNG keeps the requested DPI on disk and is also shown inline, fitted to ~1.15 MP — a clipped region (one plot) comes out sharper than its whole page in `pdf_view_pages`.
 
 ## CERN website inventory tools (webservices-portal.web.cern.ch + crt.sh)
 

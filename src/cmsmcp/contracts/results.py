@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
+from mcp.types import ImageContent
 from pydantic import BaseModel, Field
 
 # Hard budget for one tool result as JSON. JSON-RPC frames die at 16 MiB; an
@@ -66,6 +68,19 @@ class ToolEnvelope(BaseModel):
     @classmethod
     def failure(cls, error: ErrorPayload) -> ToolEnvelope:
         return cls(status="error", error=error)
+
+
+@dataclass(frozen=True)
+class WithImages:
+    """A tool result plus images returned inline as MCP image content.
+
+    The registry renders ``result`` as usual (text, paging, audit) and appends
+    the images, so image-capable clients show them to the model directly.
+    Images must be size-capped by the producer (see ``adapters/pdftools.py``).
+    """
+
+    result: ToolEnvelope | str
+    images: tuple[ImageContent, ...] = ()
 
 
 class SearchResult(BaseModel):

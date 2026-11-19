@@ -47,7 +47,8 @@ GROUP_GUIDE: dict[str, str] = {
     "rucio": "the user's data rules/transfers and dataset placement (needs grid proxy)",
     "mcm": "MC production requests (prepids) and their datasets",
     "xsdb": "MC cross sections",
-    "pdf": "crop/render figures from downloaded PDFs",
+    "pdf": "read downloaded PDFs (slides, notes, papers): text first, page images when "
+    "figures matter; crop figures",
     "lxplus": "the user's EOS/AFS files, quota and HTCondor jobs (needs `cmsmcp connect`)",
     "mine": "the user's own queues: MRs to review, assigned issues, Jira, mentions",
 }
@@ -64,6 +65,10 @@ ROUTES: tuple[tuple[str, str], ...] = (
     ("IT/admin problem or procedure", "servicenow + eguide + jira"),
     ("a person", "phonebook + glance membership"),
     ("my work: reviews, tickets, mentions, jobs, files", "mine_overview + lxplus"),
+    (
+        "content of a PDF (slides, note, paper)",
+        "*_download_* then pdf_get_text; pdf_view_pages only for pages whose figures matter",
+    ),
 )
 
 STRATEGY = (

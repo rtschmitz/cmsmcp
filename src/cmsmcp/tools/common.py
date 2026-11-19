@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
+from mcp.types import ImageContent
 from pydantic import BaseModel
 
 from cmsmcp.auth.service import AuthService
 from cmsmcp.contracts.errors import CMSMCPError
-from cmsmcp.contracts.results import ErrorCode, ErrorPayload, ToolEnvelope
+from cmsmcp.contracts.results import ErrorCode, ErrorPayload, ToolEnvelope, WithImages
 
 
 def failure(exc: Exception) -> ToolEnvelope:
@@ -47,3 +48,16 @@ async def guarded(
         return ToolEnvelope.success(await call())
     except Exception as exc:
         return failure(exc)
+
+
+async def guarded_with_images(
+    auth: AuthService,
+    call: Callable[[], Awaitable[tuple[dict[str, Any], Sequence[ImageContent]]]],
+) -> WithImages:
+    """Like :func:`guarded` for adapters that also return inline images."""
+    try:
+        await auth.ensure_authenticated()
+        data, images = await call()
+        return WithImages(ToolEnvelope.success(data), tuple(images))
+    except Exception as exc:
+        return WithImages(failure(exc))
