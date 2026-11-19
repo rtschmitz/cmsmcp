@@ -158,9 +158,15 @@ class Settings(BaseSettings):
     # --- Token efficiency -------------------------------------------------
     # text: compact line-oriented results (default); json: one compact JSON line.
     output_format: Literal["text", "json"] = "text"
-    # Per-result character budget; longer results are cut at a line boundary
-    # with a note telling the agent how to narrow the request.
+    # First pass (skim) of a tool result, in characters. A longer result is
+    # cut here, with an outline of its headings, and kept in memory so the
+    # agent can search or read on with cmsmcp_read_more.
     max_result_chars: int = Field(default=16_000, ge=2_000, le=1_000_000)
+    # Largest single cmsmcp_read_more chunk (longer reads take more calls).
+    # It must fit the MCP client's tool-output cap: Claude Code allows 25k
+    # tokens (MAX_MCP_OUTPUT_TOKENS). At ~2.5 chars/token for dense text (URLs,
+    # hashes, JSON, numbers) 50k chars is ~20k tokens; prose is ~12k.
+    max_read_chars: int = Field(default=50_000, ge=2_000, le=4_000_000)
     # Tool groups to expose ("all", profile names, or group prefixes such as
     # "indico,gitlab"); see cmsmcp.registry.PROFILES. Core tools are always on.
     profiles: Annotated[tuple[str, ...], NoDecode] = ("all",)
@@ -214,8 +220,8 @@ class Settings(BaseSettings):
     browser_executable: str | None = Field(default_factory=_default_browser_executable)
     require_sso: bool = True
     request_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
-    max_response_bytes: int = Field(default=10 * 1024 * 1024, ge=1024)
-    max_download_bytes: int = Field(default=50 * 1024 * 1024, ge=1024)
+    max_response_bytes: int = Field(default=20 * 1024 * 1024, ge=1024)
+    max_download_bytes: int = Field(default=200 * 1024 * 1024, ge=1024)
     max_redirects: int = Field(default=5, ge=0, le=10)
     sso_poll_seconds: float = Field(default=1.0, gt=0.1, le=10)
     server_name: str = "cmsmcp"

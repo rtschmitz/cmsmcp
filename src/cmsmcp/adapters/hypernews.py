@@ -56,7 +56,6 @@ AUX_PATH_PREFIX = "/HyperNews/CMS/get/AUX/"
 _MIN_ERROR_STATUS = 400
 _SEARCH_PAGE_SIZE = 50
 _MAX_LIMIT = 3000
-_BODY_TEXT_LIMIT = 200_000
 _NOT_FOUND_MARK = "Unable to find message"
 
 _FORUM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}$")
@@ -447,7 +446,7 @@ async def get_message(
         "date": _plain(date.group(1)) or None if date else None,
         "author_name": _plain(author.group(2)) or None if author else None,
         "author_username": _html.unescape(author.group(1)).strip() or None if author else None,
-        "text": html_to_text(body, limit=_BODY_TEXT_LIMIT),
+        "text": html_to_text(body),
         "replies": replies,
         "attachments": _attachments_of(body),
         "has_next_in_thread": _NEXT_IN_THREAD_MARK in page_html,

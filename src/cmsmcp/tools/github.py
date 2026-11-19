@@ -55,8 +55,8 @@ def register_github_tools(server: MCPServer, http: SafeHttpClient) -> None:
     @server.tool(
         name="github_get_file",
         description=(
-            "A line window (max 300 lines, numbered) of one file in a GitHub repo at a "
-            "branch/tag/commit (ref; default branch if omitted)."
+            "One file (numbered lines; whole file, or start_line/end_line for a window) "
+            "in a GitHub repo at a branch/tag/commit (ref; default branch if omitted)."
         ),
     )
     async def github_get_file(

@@ -182,14 +182,12 @@ async def run_remote(
     return result
 
 
-def _result(command: str, result: CommandResult, *, limit: int = 60_000) -> dict[str, Any]:
+def _result(command: str, result: CommandResult, *, limit: int | None = None) -> dict[str, Any]:
     out = result.stdout.decode(errors="replace")
     err = result.stderr.decode(errors="replace").strip()
-    payload: dict[str, Any] = {
-        "command": command,
-        "exit_code": result.exit_code,
-        "output": out[:limit] + (f"\n…[+{len(out) - limit} chars]" if len(out) > limit else ""),
-    }
+    if limit is not None and len(out) > limit:
+        out = f"{out[:limit]}\n…[+{len(out) - limit} chars]"
+    payload: dict[str, Any] = {"command": command, "exit_code": result.exit_code, "output": out}
     if err:
         payload["stderr"] = err[-4_000:]
     return payload
@@ -201,10 +199,10 @@ async def eos_ls(settings: Settings, *, path: str) -> dict[str, Any]:
     return _result(shlex.join(argv), await run_remote(settings, argv))
 
 
-async def read_file(settings: Settings, *, path: str, max_bytes: int = 20_000) -> dict[str, Any]:
+async def read_file(settings: Settings, *, path: str, max_bytes: int = 200_000) -> dict[str, Any]:
     path = check_path(path)
     argv = ["head", "-c", str(max_bytes + 1), "--", path]
-    result = await run_remote(settings, argv)
+    result = await run_remote(settings, argv, max_output_bytes=max_bytes + 1)
     if b"\x00" in result.stdout[:8192]:
         raise InvalidInputError(
             f"{path} is a binary file",

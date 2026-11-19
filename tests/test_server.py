@@ -24,6 +24,7 @@ BOOTSTRAP_TOOLS = {
     "cern_health",
     "cern_fetch_page",
     "cern_download_file",
+    "cmsmcp_read_more",
 }
 INDICO_TOOLS = {
     "indico_get_user_info",

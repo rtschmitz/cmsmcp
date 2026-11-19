@@ -31,7 +31,6 @@ _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _BOTS = frozenset({"cmsbuild", "github-actions[bot]", "dependabot[bot]"})
 _OK = 200
 _RATE_LIMITED = 403
-_MAX_LINES = 300
 
 
 def check_repo(repo: str) -> str:
@@ -164,7 +163,7 @@ async def get_thread(
         "author": (issue.get("user") or {}).get("login"),
         "created_at": issue.get("created_at"),
         "labels": [lb.get("name") for lb in issue.get("labels") or []],
-        "body": (issue.get("body") or "")[:4_000],
+        "body": issue.get("body") or "",
     }
     comments = _json(
         await _get(client, f"/repos/{repo}/issues/{number}/comments", {"per_page": 100})
@@ -198,7 +197,7 @@ async def get_thread(
             "author": (c.get("user") or {}).get("login"),
             "date": c.get("created_at"),
             "on": c.get("_path"),
-            "body": (c.get("body") or "")[:800],
+            "body": c.get("body") or "",
         }
         for c in human[-max_comments:]
     ]
@@ -228,7 +227,7 @@ async def get_file(
     lines = response.content.decode(errors="replace").splitlines()
     total = len(lines)
     start = max(1, start_line)
-    end = min(total, end_line or start + _MAX_LINES - 1, start + _MAX_LINES - 1)
+    end = min(total, end_line or total)
     text = "\n".join(f"{i:>6}  {lines[i - 1]}" for i in range(start, end + 1))
     return {
         "url": f"https://github.com/{repo}/blob/{quote(ref or 'HEAD')}/{quote(clean)}",

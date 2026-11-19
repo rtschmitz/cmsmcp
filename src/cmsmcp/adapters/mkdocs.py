@@ -35,7 +35,6 @@ from cmsmcp.net.client import SafeHttpClient
 SOURCE = "mkdocs"
 
 _MIN_ERROR_STATUS = 400
-_MAX_PAGE_TEXT = 20000
 _MAX_SEARCH_LIMIT = 100
 _TITLE_HIT_WEIGHT = 10
 _SNIPPET_RADIUS = 120
@@ -233,7 +232,7 @@ async def get_page(
         "source": SOURCE,
         "location": location,
         "title": title,
-        "text": html_to_text(html, limit=_MAX_PAGE_TEXT),
+        "text": html_to_text(html),
         "url": url,
     }
 

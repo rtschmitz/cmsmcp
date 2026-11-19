@@ -44,7 +44,7 @@ def register_lxplus_tools(  # noqa: C901 - one closure per tool
     )
     async def lxplus_read_file(
         path: str,
-        max_bytes: Annotated[int, Field(ge=100, le=200_000)] = 20_000,
+        max_bytes: Annotated[int, Field(ge=100, le=2_000_000)] = 200_000,
     ) -> ToolEnvelope:
         return await enveloped(lambda: lxplus.read_file(settings, path=path, max_bytes=max_bytes))
 

@@ -44,7 +44,6 @@ _ISSUE_FIELDS = (
 _MAX_RESULTS_LIMIT = 100
 _NOT_FOUND = 404
 _UNAUTHORIZED_STATUSES = frozenset({401, 403})
-_DESCRIPTION_LIMIT = 20000
 _KEY_RE = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
 _PROJECT_RE = re.compile(r"^[A-Z][A-Z0-9]+$")
 _MYSELF_URL = f"{BASE}/myself"
@@ -106,8 +105,6 @@ def _issue_item(issue: dict[str, Any], *, detail: bool) -> dict[str, Any]:
     }
     if detail:
         description = fields.get("description")
-        if isinstance(description, str) and len(description) > _DESCRIPTION_LIMIT:
-            description = description[:_DESCRIPTION_LIMIT] + "\n[truncated]"
         attachments = []
         for att in fields.get("attachment") or []:
             if not isinstance(att, dict):
@@ -130,7 +127,7 @@ def _issue_item(issue: dict[str, Any], *, detail: bool) -> dict[str, Any]:
                     {
                         "author": _person(c.get("author")),
                         "created_at": c.get("created"),
-                        "body": (c.get("body") or "")[:4000],
+                        "body": c.get("body") or "",
                     }
                     for c in comments
                     if isinstance(c, dict)

@@ -82,7 +82,6 @@ JOB_SCOPES = (
     "waiting_for_resource",
     "manual",
 )
-_TRACE_TEXT_LIMIT = 60000
 _NOT_FOUND = 404
 _MAX_PER_PAGE = 100
 
@@ -989,9 +988,17 @@ async def get_job_trace(
     *,
     project: str,
     job_id: int,
-    tail_chars: int = _TRACE_TEXT_LIMIT,
+    tail_chars: int | None = None,
 ) -> dict[str, Any]:
-    """Return the plain-text log (trace) of one job, tail-truncated when large."""
+    """Return the plain-text log (trace) of one job, tail-truncated when large.
+
+    ``tail_chars`` defaults to the first-pass size (CMSMCP_MAX_RESULT_CHARS) so
+    the failure at the end of the log is what the agent sees first.
+    """
+    if tail_chars is None:
+        # Leave room for the job metadata so the first pass, which keeps the
+        # head of a cut result, still ends on the log's failure tail.
+        tail_chars = max(1_000, settings.max_result_chars - 1_500)
     response = await client.request(
         "GET",
         _url(settings, f"/projects/{_project_key(project)}/jobs/{int(job_id)}/trace"),

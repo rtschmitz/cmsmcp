@@ -47,10 +47,9 @@ attachments of notes that live outside an analysis (e.g. conference
 reports). Analysis codes with slashes (``CMS CR-2026/251``) are
 percent-encoded into the single ``ancode`` path segment.
 
-Size note: the notes index (~15 MB) exceeds the default
-``CMSMCP_MAX_RESPONSE_BYTES`` (10 MB); raise it (e.g. to 20 MB) to use
-``glance_search_notes``. The payload is fetched in full on each call and
-filtered client-side — output is always bounded by ``limit``.
+Size note: the notes index (~15 MB) needs ``CMSMCP_MAX_RESPONSE_BYTES`` >= ~20 MB
+(the default). The payload is fetched in full on each call and filtered
+client-side — output is always bounded by ``limit``.
 """
 
 from __future__ import annotations

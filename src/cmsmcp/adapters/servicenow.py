@@ -83,7 +83,6 @@ SEARCH_SOURCES = (
 _DEFAULT_LIMIT = 10
 _MAX_LIMIT = 30  # Service-Portal search backend accepts at most ~30 hits/call
 _SNIPPET_LIMIT = 400
-_TEXT_LIMIT = 20000
 _UNAUTHORIZED_STATUSES = frozenset({401, 403})
 _HTTP_OK = 200
 
@@ -308,9 +307,7 @@ async def _resolve_category(client: SafeHttpClient, sys_id: str) -> dict[str, st
 
 def _article_item(record: dict[str, Any], category: dict[str, str | None]) -> dict[str, Any]:
     body_html = record.get("text") or ""
-    text = html_to_text(body_html, limit=_TEXT_LIMIT) if isinstance(body_html, str) else ""
-    if isinstance(body_html, str) and len(text) >= _TEXT_LIMIT:
-        text += "\n[truncated]"
+    text = html_to_text(body_html) if isinstance(body_html, str) else ""
     helpful: int | None = None
     try:
         helpful = int(str(record.get("helpful_count") or ""))

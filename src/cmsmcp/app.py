@@ -13,7 +13,6 @@ from pydantic import Field
 
 from cmsmcp import __version__, routing
 from cmsmcp.auth.browser import (
-    FETCH_DEFAULT_MAX_CHARS,
     FETCH_DEFAULT_TIMEOUT_SECONDS,
     FETCH_MAX_CHARS_LIMIT,
     FETCH_MAX_TIMEOUT_SECONDS,
@@ -72,7 +71,7 @@ async def _cern_fetch_page_payload(
     url: str,
     wait_for: str | None,
     timeout_seconds: int,
-    max_chars: int,
+    max_chars: int | None,
     policy: Policy,
 ) -> ToolEnvelope:
     """Handler for the cern_fetch_page tool (kept out of build_server)."""
@@ -268,9 +267,14 @@ def build_server(  # noqa: C901 - per-tool registration blocks dominate the bran
             Field(ge=5, le=FETCH_MAX_TIMEOUT_SECONDS),
         ] = FETCH_DEFAULT_TIMEOUT_SECONDS,
         max_chars: Annotated[
-            int,
-            Field(ge=1_000, le=FETCH_MAX_CHARS_LIMIT),
-        ] = FETCH_DEFAULT_MAX_CHARS,
+            int | None,
+            Field(
+                ge=1_000,
+                le=FETCH_MAX_CHARS_LIMIT,
+                description="Cut the page text here; default whole page (long "
+                "results are paged: see cmsmcp_read_more).",
+            ),
+        ] = None,
     ) -> ToolEnvelope:
         """Browse one SSO-protected page headlessly and return its visible text."""
         return await _cern_fetch_page_payload(

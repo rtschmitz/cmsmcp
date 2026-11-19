@@ -280,7 +280,7 @@ async def get_detail(
             "portal answered with the login page instead of the entry detail",
             instructions="Call cern_auth_sign_in again to refresh the portal session.",
         )
-    body_text = html_to_text(text, limit=20000)
+    body_text = html_to_text(text)
     attachments = sorted(
         {
             *(_ATTACHMENT_RE.findall(text)),

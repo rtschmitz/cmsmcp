@@ -54,7 +54,6 @@ _VIEW_URL_RE = re.compile(
     rf"^/twiki/bin/view/({_WEB_SEGMENT}(?:/{_WEB_SEGMENT})*)/([A-Za-z0-9_.-]+)$"
 )
 _MIN_ERROR_STATUS = 400
-_PAGE_TEXT_LIMIT = 200_000
 # Print-cover footer metadata (replaces the wiki-source %META records; CERN
 # TWiki no longer serves raw source — see module docstring).
 _REVISION_RE = re.compile(
@@ -242,7 +241,7 @@ async def get_page(
         "source": SOURCE,
         "web": web,
         "topic": topic,
-        "text": html_to_text(html, limit=_PAGE_TEXT_LIMIT),
+        "text": html_to_text(html),
         "url": url,
     }
     if raw:

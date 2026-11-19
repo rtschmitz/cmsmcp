@@ -44,7 +44,13 @@ Secrets live in `~/.config/cmsmcp/secrets/<field>` (mode 0600, ignored if readab
 - `cern_search(query, sources=[...], limit=5)` searches several sources in one call and returns `[source] title — url (date)` + snippet lines. Defaults when the target is unknown: indico, docs (cms-search incl. TWiki), gitlab, mattermost, cms-talk, glance, inspire; optional: jira (slow), github, cds, docdb, servicenow, gocms, hypernews, cms-pub-talk, root-forum.
 - `mine_overview` returns your GitLab review requests/MRs/issues/to-dos, Jira issues and Mattermost mentions in one call.
 - `CMSMCP_PROFILES` limits the tool list (e.g. `docs,meetings,code,personal`); `CMSMCP_TOOL_MODE=lazy` lists only `cmsmcp_find_tools` / `cmsmcp_describe_tool` / `cmsmcp_call` plus core tools, for clients that load every schema up front.
-- `CMSMCP_OUTPUT_FORMAT=json` gives compact one-line JSON instead of text; `CMSMCP_MAX_RESULT_CHARS` sets the per-result budget (default 16000).
+- `CMSMCP_OUTPUT_FORMAT=json` gives compact one-line JSON instead of text.
+- **Long results: skim first, then read as deep as needed.** A result longer than the skim (`CMSMCP_MAX_RESULT_CHARS`, 16k chars ≈ 4k tokens) — a long TWiki page, a CI log, a big thread — arrives as its head plus an outline of the rest (`@offset ## heading` lines) and a `ref`. The full text stays in server memory (never on disk, last ~32 cut results), and the agent picks the cheapest path with `cmsmcp_read_more(ref, ...)`:
+  - `find="lumi mask|lumiMask"` — only the matching passages (case-insensitive, `|` for alternatives);
+  - `offset=<outline @offset>` — one section;
+  - `offset=<cut>, max_chars=…` — read on, calling again until the end when the whole document is needed.
+
+  One call returns at most `CMSMCP_MAX_READ_CHARS` (50k chars), which keeps even dense text (URLs, JSON, hashes) under Claude Code's 25k-token tool-output cap (`MAX_MCP_OUTPUT_TOKENS`); raise it only if your client allows more. Longer documents just take more calls. A single document's body is never clipped; in text output each item of a *list* (search hit, post, comment) is clipped at 4k chars — open the item's detail tool for its full text. HTML headings become `#` lines and `<pre>` code keeps its indentation (four-space code block).
 
 ## Personal data and actions
 
@@ -414,7 +420,7 @@ Tokens are **minted lazily on first API use**: the call re-opens the app root he
 - `glance_get_analysis` — full analysis-page profile by code (`EXO-24-010`) or numeric id: identity/dates/authors/abstract, ARC review committee (chair/LEs/members), paper info, workflow (stage, entry conditions, past events), analysis history, attachments (document versions, GitLab repos, Indico contributions, related-note documents), hashtags, and a derived `links` block (`pubtalk_forum`, `public_result`, `twiki`) built exactly as the page builds them. Support-endpoint failures surface per-section as `{"error": ...}`, never silently.
 - `glance_list_published_analyses` — published analyses; filters incl. `has_arxiv`.
 - `glance_list_note_types` — note types (Analysis Note, Conference Report, …).
-- `glance_search_notes` — search notes by `title_contains`/`working_group`/`type_name`/`project`. The upstream index is one ~15 MB payload fetched in full per call: raise `CMSMCP_MAX_RESPONSE_BYTES` above ~16 MB to use it (documented in the tool description; no silent truncation).
+- `glance_search_notes` — search notes by `title_contains`/`working_group`/`type_name`/`project`. The upstream index is one ~15 MB payload fetched in full per call: needs `CMSMCP_MAX_RESPONSE_BYTES` above ~16 MB (the default is 20 MiB) (documented in the tool description; no silent truncation).
 - `glance_get_note` — note detail by numeric id, composed with the note's attachments (`attachments.documents[].versions`), workflow tracker (`transitions/{note_id}`), and update history (`notes/{note_id}/history` — rows can carry editor comments).
 - `glance_list_projects` — ALCM projects with e-groups.
 - `glance_list_alcm_working_groups` — working groups, `kind=physics|non-physics|all`.
@@ -562,8 +568,8 @@ Configuration uses environment variables with the `CMSMCP_` prefix. Common setti
 | `CMSMCP_IDENTITY_COOKIE_NAMES` | `["KEYCLOAK_IDENTITY"]` | Cookie names accepted as proof of login |
 | `CMSMCP_ALLOWED_HOSTS` | CERN hosts and INSPIRE-HEP | Request allowlist |
 | `CMSMCP_REQUEST_TIMEOUT_SECONDS` | `30` | Upstream request timeout |
-| `CMSMCP_MAX_RESPONSE_BYTES` | `10485760` | Maximum in-memory response size |
-| `CMSMCP_MAX_DOWNLOAD_BYTES` | `52428800` | Maximum returned/downloaded file size |
+| `CMSMCP_MAX_RESPONSE_BYTES` | `20971520` (20 MiB) | Maximum in-memory response size |
+| `CMSMCP_MAX_DOWNLOAD_BYTES` | `209715200` (200 MiB) | Maximum downloaded file size (files land on disk; only the path reaches the agent) |
 | `CMSMCP_REQUIRE_SSO` | `true` | Enforce authentication before protected tools |
 | `CMSMCP_INDICO_BASE_URL` | `https://indico.cern.ch` | Indico instance used by the Indico tools |
 | `CMSMCP_INDICO_API_TOKEN` | unset | Indico personal API token (`indp_...`); required for protected events/categories |
@@ -577,7 +583,8 @@ Configuration uses environment variables with the `CMSMCP_` prefix. Common setti
 | `CMSMCP_JIRA_TOKEN` / `CMSMCP_GITHUB_TOKEN` | unset | Optional Jira personal token (needed only for the opt-in `jira_comment` action; reads use the SSO session) / GitHub token |
 | `CMSMCP_CONFIG_DIR` | `~/.config/cmsmcp` | Secret files (`secrets/`) and the setup config file (`cmsmcp.env`) |
 | `CMSMCP_OUTPUT_FORMAT` | `text` | `text` (compact) or `json` (one compact line) |
-| `CMSMCP_MAX_RESULT_CHARS` | `16000` | Per-result character budget |
+| `CMSMCP_MAX_RESULT_CHARS` | `16000` | Skim (first pass) size of a long result |
+| `CMSMCP_MAX_READ_CHARS` | `50000` | Most characters one `cmsmcp_read_more` call returns; keep under the client's tool-output cap |
 | `CMSMCP_PROFILES` | `all` | Tool groups/profiles to expose (`search docs meetings literature analysis code chat ops compute mine personal`, or group names) |
 | `CMSMCP_TOOL_MODE` | `direct` | `lazy` hides non-core tools behind find/describe/call |
 | `CMSMCP_PERSONAL_SOURCES` | empty | Opt-ins for personal content, e.g. `mattermost_dm` |

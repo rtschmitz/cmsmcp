@@ -81,40 +81,73 @@ def json_body(response: SafeResponse, *, source: str) -> Any:
 
 
 class _TextExtractor(HTMLParser):
-    """Strip small HTML fragments (posts, abstracts) into plain text."""
+    """Strip small HTML fragments (posts, abstracts) into plain text.
+
+    Headings become Markdown ``#`` lines (long pages get an outline when cut,
+    see :mod:`cmsmcp.paging`); ``<pre>`` code keeps its whitespace, indented
+    four spaces like a Markdown code block so its ``#`` comments are not
+    taken for headings.
+    """
 
     _BLOCK_TAGS: ClassVar[frozenset[str]] = frozenset(
         {"p", "br", "div", "li", "pre", "blockquote", "h1", "h2", "h3", "h4", "tr", "td"}
     )
+    _HEADING_LEVELS: ClassVar[dict[str, int]] = {"h1": 1, "h2": 2, "h3": 3, "h4": 4}
+    # Marks the start of a <pre> line; text() keeps those lines verbatim.
+    _PRE_LINE = "\x00"
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self._parts: list[str] = []
         self._skip_depth = 0
+        self._pre_depth = 0
 
     def handle_starttag(self, tag: str, _attrs: list[tuple[str, str | None]]) -> None:
         if tag in ("style", "script"):
             self._skip_depth += 1
         elif tag in self._BLOCK_TAGS:
             self._parts.append("\n")
+            if tag == "pre":
+                self._pre_depth += 1
+                self._parts.append(self._PRE_LINE)
+            elif level := self._HEADING_LEVELS.get(tag):
+                self._parts.append("#" * level + " ")
 
     def handle_endtag(self, tag: str) -> None:
         if tag in ("style", "script") and self._skip_depth:
             self._skip_depth -= 1
         elif tag in self._BLOCK_TAGS:
+            if tag == "pre" and self._pre_depth:
+                self._pre_depth -= 1
             self._parts.append("\n")
 
     def handle_data(self, data: str) -> None:
-        if not self._skip_depth:
-            self._parts.append(data)
+        if self._skip_depth:
+            return
+        data = data.replace(self._PRE_LINE, "")
+        if self._pre_depth:
+            data = data.replace("\n", "\n" + self._PRE_LINE)
+        self._parts.append(data)
 
     def text(self) -> str:
-        lines = [" ".join(line.split()) for line in "".join(self._parts).splitlines()]
+        lines = []
+        for line in "".join(self._parts).splitlines():
+            if line.startswith(self._PRE_LINE):
+                code = line.replace(self._PRE_LINE, "").rstrip()
+                lines.append(f"    {code}" if code.strip() else "")
+            else:
+                lines.append(" ".join(line.split()))
         return "\n".join(line for line in lines if line)
 
 
-def html_to_text(html: str, *, limit: int = 20000) -> str:
-    """Convert an HTML fragment to whitespace-normalized plain text."""
+def html_to_text(html: str, *, limit: int | None = None) -> str:
+    """Convert an HTML fragment to whitespace-normalized plain text.
+
+    No cut by default: the HTML is already bounded by ``max_response_bytes``
+    and the tool layer pages long results (first pass + cmsmcp_read_more).
+    Pass ``limit`` only for short previews.
+    """
     parser = _TextExtractor()
     parser.feed(html)
-    return parser.text()[:limit]
+    text = parser.text()
+    return text if limit is None else text[:limit]

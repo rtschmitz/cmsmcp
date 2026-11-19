@@ -355,14 +355,15 @@ def register_gitlab_tools(  # noqa: C901
             "Plain-text log (trace) of one CI job of a gitlab.cern.ch "
             "project — 'why did CI job X fail'. job_id comes from "
             "gitlab_list_pipeline_jobs. Long logs are tail-truncated to "
-            "tail_chars characters (the failure tail is kept; 'truncated' "
-            "flags it); fetch full logs via the job web_url in a browser."
+            "tail_chars characters (default: the first-pass size; the failure tail "
+            "is kept; 'truncated' and total_chars flag it) — raise tail_chars to "
+            "read further back."
         ),
     )
     async def gitlab_get_job_trace(
         project: str,
         job_id: Annotated[int, Field(ge=1)],
-        tail_chars: Annotated[int, Field(ge=100, le=200000)] = 60000,
+        tail_chars: Annotated[int | None, Field(ge=100)] = None,
     ) -> ToolEnvelope:
         """Job log (trace) text."""
         return await guarded(
