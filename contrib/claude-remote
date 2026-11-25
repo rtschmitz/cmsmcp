@@ -21,7 +21,7 @@ os=$(uname -s)
 case "$os" in
   Linux)
     sshfs_hint="sudo apt install sshfs   (Fedora/RHEL/Alma: sudo dnf install fuse-sshfs)"
-    deps="ssh sshfs mountpoint claude" ;;
+    deps="ssh sshfs claude" ;;
   Darwin)
     sshfs_hint="brew install macos-fuse-t/homebrew-cask/fuse-t-sshfs   (or macFUSE + sshfs; see contrib/README.md)"
     deps="ssh sshfs umount diskutil claude" ;;
@@ -41,7 +41,8 @@ fi
 
 is_mounted() {
   if [[ "$os" == Linux ]]; then
-    mountpoint -q "$1" 2>/dev/null
+    # /proc/mounts, not mountpoint(1): stat on a dead sshfs mount can block.
+    grep -qF " $1 fuse.sshfs " /proc/mounts
   else
     # macOS has no mountpoint(1); match the "<src> on <dir> (<type>, ...)" line of mount(8).
     [[ "$(mount)" == *" on $1 ("* ]]
@@ -58,27 +59,57 @@ unmount() {
 
 sock="$HOME/.ssh/claude-remote-${host//[^A-Za-z0-9._-]/_}.sock"
 mnt="$HOME/remote/${host//[^A-Za-z0-9._-]/_}${rpath//\//_}"
-mkdir -p "$mnt" "$HOME/.ssh"
+mkdir -p "$HOME/remote" "$HOME/.ssh"
+
+# A mount whose connection died (suspend, network drop, remote reboot) stays listed but
+# every access fails or blocks, which hangs claude on start or resume. Probe it with a
+# time limit; if it does not answer, detach it and stop the sshfs processes serving it.
+# df (statfs) always goes to the server; ls can be answered from sshfs's cache.
+responsive() {
+  if command -v timeout >/dev/null; then timeout -s KILL 10 df -P "$1" >/dev/null 2>&1
+  else df -P "$1" >/dev/null 2>&1; fi
+}
+if is_mounted "$mnt" && ! responsive "$mnt"; then
+  echo "Clearing dead mount at $mnt" >&2
+  if [[ "$os" == Linux ]]; then "$fusermount" -uz "$mnt" 2>/dev/null || true
+  else diskutil unmount force "$mnt" >/dev/null 2>&1 || true; fi
+  for pid in $(pgrep -x sshfs || true); do
+    [[ "$(ps -o args= -p "$pid")" == "sshfs $host:$rpath $mnt "* ]] && kill "$pid" 2>/dev/null || true
+  done
+fi
+mkdir -p "$mnt"
 
 # 1. One shared SSH connection (you authenticate once; 2FA/Kerberos prompts happen here).
 started_master=0
 if ! ssh -S "$sock" -O check "$host" 2>/dev/null; then
+  rm -f "$sock"  # left by a master that died; ssh refuses to reuse the path
   ssh -M -S "$sock" -o ControlPersist=yes -o ServerAliveInterval=15 -fN "$host"
   started_master=1
 fi
+
+# Everything after the login goes through the shared connection only. ProxyCommand=false
+# applies only when ssh would open a NEW connection (the socket is gone), so once the master
+# dies, sshfs reconnects and Claude's commands fail locally instead of making login attempts
+# that the remote counts as failures (and that can get you blocked).
+via_master="ssh -S $sock -o ProxyCommand=false -o BatchMode=yes"
 
 # 2. Mount the remote directory over that connection.
 mounted_here=0
 if ! is_mounted "$mnt"; then
   sshfs "$host:$rpath" "$mnt" \
-    -o ssh_command="ssh -S $sock" \
-    -o "reconnect,ServerAliveInterval=15,follow_symlinks${CLAUDE_REMOTE_SSHFS_OPTS:+,$CLAUDE_REMOTE_SSHFS_OPTS}"
+    -o ssh_command="$via_master" \
+    -o "reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,follow_symlinks${CLAUDE_REMOTE_SSHFS_OPTS:+,$CLAUDE_REMOTE_SSHFS_OPTS}"
   mounted_here=1
 fi
 
 cleanup() {
   cd /
-  (( mounted_here )) && unmount "$mnt" 2>/dev/null || true
+  if (( mounted_here )) && ! unmount "$mnt" 2>/dev/null; then
+    # Still in use (e.g. a background command started from the session). Keep the
+    # connection open so the mount keeps working; the next run reuses both.
+    echo "Mount still in use; leaving $mnt and its SSH connection open" >&2
+    return
+  fi
   (( started_master )) && ssh -S "$sock" -O exit "$host" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
@@ -86,8 +117,11 @@ trap cleanup EXIT INT TERM
 prompt="You are working on a REMOTE project. The current directory is an sshfs mount of ${host}:${rpath}.
 - Read and edit files normally through the mount.
 - Run ALL commands (build, test, git, grep/find over large trees, anything needing the remote environment) on the remote with:
-    ssh -S ${sock} ${host} 'cd ${rpath} && <command>'
+    ${via_master} ${host} 'cd ${rpath} && <command>'
   For a subdirectory, cd to the matching path under ${rpath}.
+  If that fails with 'Control socket connect' / 'exec false', the shared connection is gone: stop and tell the
+  user to restart claude-remote. Never retry ssh in a loop or hide its errors (2>/dev/null), including in
+  background watchers.
 - Do not run builds, git, or environment-specific tools locally; the local machine does not have the remote software stack."
 
 echo "Remote mounted at: $mnt"

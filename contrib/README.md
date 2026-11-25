@@ -96,7 +96,10 @@ alias claude-eos='claude-remote <user>@lxplus.cern.ch:/eos/user/<u>/<user>/<proj
 | Symptom | Fix |
 | --- | --- |
 | `missing dependency: sshfs` | Install sshfs (see Requirements). |
-| `Transport endpoint is not connected` / mount directory unreadable | A session was killed hard and left a dead mount. Linux: `fusermount3 -u ~/remote/<dir>` (or `fusermount -u`). macOS: `umount ~/remote/<dir>` or `diskutil unmount force ~/remote/<dir>`. |
+| `claude` hangs on start or `--resume`, or the mount gives `Input/output error` / `Transport endpoint is not connected` | The SSH connection behind the mount died (suspend, network drop, remote reboot). The next `claude-remote` run detects the dead mount (`Clearing dead mount at …`) and remounts; just rerun it. By hand: Linux `fusermount3 -uz ~/remote/<dir>` (or `fusermount -uz`), macOS `diskutil unmount force ~/remote/<dir>`, then stop any leftover `sshfs` for that path. |
+| `ssh: connect to host … Connection refused` on start | The remote's sshd is down or is blocking you; check with `ssh <host> true`, and try again later. |
+| Commands fail with `Control socket connect` / `exec false` | The shared connection is gone. By design nothing then opens a new one (`-o ProxyCommand=false`), so sshfs retries and Claude's commands never become failed logins on the remote ("N failed login attempts", fail2ban blocks). Restart `claude-remote`. Background loops you start yourself should use the same `ssh -S <socket> -o ProxyCommand=false` form. |
+| `Mount still in use; leaving … open` on exit | Something started from the session (e.g. a background command) still has the mount open. The mount and connection stay up and the next run reuses them. |
 | `ControlSocket … already exists, disabling multiplexing`, or a second password/2FA prompt for the mount | A stale socket from a crashed run: `ssh -S ~/.ssh/claude-remote-<host>.sock -O exit <host>`, or delete the `.sock` file. |
 | macOS: mount fails with a FUSE/permission error | macFUSE: allow the extension in System Settings → Privacy & Security and reboot. FUSE-T: reinstall the cask. Also grant your terminal access to network volumes if macOS asks. |
 | `unix_listener: path … too long for Unix domain socket` | Your home path plus host name exceeds the socket length limit (104 bytes on macOS). Use a short `~/.ssh/config` alias as HOST. |
