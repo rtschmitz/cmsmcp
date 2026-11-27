@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from cmsmcp import oscompat
 from cmsmcp.config.settings import Settings
 
 
@@ -30,6 +31,9 @@ def _hermetic_cmsmcp_env(
     # machine-parseable (compact JSON) for assertions.
     monkeypatch.setenv("CMSMCP_CONFIG_DIR", str(tmp_path_factory.mktemp("cmsmcp-config")))
     monkeypatch.setenv("CMSMCP_OUTPUT_FORMAT", "json")
+    # The AFS-home (lxplus) defaults key off the real home directory; keep them
+    # off unless a test opts in, so results don't depend on where tests run.
+    monkeypatch.setattr(oscompat, "_AFS_ROOT", Path("/nonexistent-afs-root"))
 
 
 @pytest.fixture

@@ -159,10 +159,9 @@ From your clone on lxplus, run:
 contrib/lxplus/setup
 ```
 
-It installs everything, prints the command to register with your MCP client, and offers to sign in. Then:
+It installs `cmsmcp`, prints the command to register with your MCP client, and offers to sign in. Then use `cmsmcp` as described in this README; it picks the right settings on lxplus by itself.
 
-- Use `contrib/lxplus/cmsmcp-lxplus` in place of `cmsmcp` for every command, e.g. `contrib/lxplus/cmsmcp-lxplus doctor`.
-- Sign in again with `contrib/lxplus/cmsmcp-lxplus login` when tools answer `AUTH_REQUIRED` (about once a day).
+- Sign in again with `cmsmcp login` when tools answer `AUTH_REQUIRED` (about once a day).
 - For DAS, DQM and Rucio, make your grid proxy with `voms-proxy-init -voms cms -valid 192:00 -out ~/x509up_u$(id -u)`.
 - To update, `git pull` and run `contrib/lxplus/setup` again.
 
@@ -565,7 +564,7 @@ directory.web.cern.ch is a Drupal portal whose search tabs delegate to CDS, Indi
 
 ## lxplus tools (Kerberos SSH)
 
-lxplus asks for a second factor after Kerberos, so cmsmcp never logs in unattended: `cmsmcp connect` opens an SSH control master once (kinit + 2FA code) and every tool reuses it for `CMSMCP_LXPLUS_PERSIST` (default 12h). Requires `CMSMCP_LXPLUS_USER` (`cmsmcp setup lxplus`). On lxplus itself they are not needed and `contrib/lxplus/cmsmcp-lxplus` turns them off.
+lxplus asks for a second factor after Kerberos, so cmsmcp never logs in unattended: `cmsmcp connect` opens an SSH control master once (kinit + 2FA code) and every tool reuses it for `CMSMCP_LXPLUS_PERSIST` (default 12h). Requires `CMSMCP_LXPLUS_USER` (`cmsmcp setup lxplus`). On lxplus itself they are not needed, and cmsmcp turns them off.
 
 - `lxplus_eos_ls`, `lxplus_read_file` (text, bounded), `lxplus_download_file` (into local storage), `lxplus_quota`, `lxplus_condor_queue`, `lxplus_condor_history`, `lxplus_crab_status` (in your CMSSW area).
 - Actions (confirmed): `lxplus_condor_submit` (own area; hash + first lines confirmed), `lxplus_condor_remove`, `lxplus_crab_resubmit` (own area), `lxplus_run` (one shell command; a best-effort filter refuses visibly credential-touching commands).

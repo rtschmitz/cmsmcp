@@ -275,6 +275,9 @@ class Setup:
             "lxplus: run read-only queries (EOS, HTCondor, quotas) over your Kerberos ticket."
         )
         settings = self.settings
+        if oscompat.lxplus_unsupported() == oscompat.LXPLUS_ON_AFS:
+            self.io.say(f"  {oscompat.LXPLUS_ON_AFS}")
+            return
         if settings.lxplus_user and self._keep(asyncio.run(check_lxplus(settings))):
             return
         default = settings.lxplus_user or os.environ.get("USER", "")

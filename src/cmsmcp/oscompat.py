@@ -18,6 +18,12 @@ differences the rest of the code base would otherwise trip on:
   depends on, so lxplus tools point the user to WSL;
 - subprocess environments, atomic replaces and download names that Windows
   needs adjusted.
+
+One Linux case also gets its own defaults: a home directory on AFS (CERN
+lxplus, ``afs_data_dir``). AFS protects files by directory ACLs rather than
+mode bits, cannot hold Unix sockets, and lxplus ``/tmp`` is per node, so there
+config, state and the Playwright browsers live in ``~/private/cmsmcp``, the
+grid proxy defaults to ``~/x509up_u<uid>``, and the lxplus SSH tools are off.
 """
 
 from __future__ import annotations
@@ -39,6 +45,15 @@ IS_MACOS = sys.platform == "darwin"
 # Linux behaviour is the reference; anything else is best effort.
 UNSUPPORTED_PLATFORM = "Windows" if IS_WINDOWS else "macOS" if IS_MACOS else None
 
+LXPLUS_ON_AFS = (
+    "lxplus tools are off: cmsmcp is running with an AFS home (on lxplus), and AFS "
+    "cannot hold the SSH control socket these tools reuse. You are already on lxplus, "
+    "so run eos, condor and crab commands in your shell instead."
+)
+
+# Root of the AFS filesystem; a module attribute so tests can point it elsewhere.
+_AFS_ROOT = Path("/afs")
+
 LXPLUS_ON_WINDOWS = (
     "lxplus tools are not available on native Windows: they reuse an OpenSSH "
     "ControlMaster connection (opened once with your 2FA code), which Windows "
@@ -49,6 +64,36 @@ _WINDOWS_RESERVED = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$", 
 _WINDOWS_BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _REPLACE_ATTEMPTS = 10
 _REPLACE_BACKOFF_SECONDS = 0.05
+
+
+def _on_afs(path: Path) -> bool:
+    try:
+        return path.resolve().is_relative_to(_AFS_ROOT.resolve())
+    except OSError:
+        return False
+
+
+def afs_data_dir() -> Path | None:
+    """``~/private/cmsmcp`` when the home directory is on AFS (CERN lxplus), else None.
+
+    AFS ignores Unix mode bits for other users and protects files only through
+    directory ACLs; CERN's ``~/private`` is the directory nobody else can read.
+    """
+    if IS_WINDOWS:
+        return None
+    home = Path.home()
+    private = home / "private"
+    return private / "cmsmcp" if _on_afs(home) and private.is_dir() else None
+
+
+def prepare_environment() -> None:
+    """Process-wide defaults read from the environment by libraries (Playwright).
+
+    Called once at startup; values already set are never overridden.
+    """
+    data = afs_data_dir()
+    if data is not None:
+        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(data / "pw"))
 
 
 def config_root() -> Path:
@@ -118,6 +163,9 @@ def default_proxy_path() -> Path:
     if explicit:
         return Path(explicit)
     if hasattr(os, "getuid"):
+        if afs_data_dir() is not None:
+            # lxplus /tmp is per node; a proxy written to the AFS home works everywhere
+            return Path.home() / f"x509up_u{os.getuid()}"
         return Path(f"/tmp/x509up_u{os.getuid()}")  # noqa: S108 - voms-proxy-init default
     return Path(tempfile.gettempdir()) / f"x509up_u{getpass.getuser()}"
 
@@ -162,7 +210,14 @@ def kerberos_extra_hint(linux_hint: str) -> str:
 
 def lxplus_unsupported() -> str | None:
     """Why lxplus SSH tools cannot run on this platform, or None."""
-    return LXPLUS_ON_WINDOWS if IS_WINDOWS else None
+    if IS_WINDOWS:
+        return LXPLUS_ON_WINDOWS
+    if afs_data_dir() is not None:
+        # The SSH control socket lives in the state directory; AFS refuses sockets.
+        state = os.environ.get("CMSMCP_STATE_DIR")
+        if not state or _on_afs(Path(state).expanduser()):
+            return LXPLUS_ON_AFS
+    return None
 
 
 def trust_context() -> ssl.SSLContext:

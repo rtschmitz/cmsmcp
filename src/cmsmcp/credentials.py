@@ -195,9 +195,18 @@ async def lxplus_master_alive(settings: Settings) -> bool:
     return result.exit_code == 0
 
 
+LXPLUS_OFF_ON_AFS = "off: not needed when cmsmcp itself runs on lxplus"
+
+
+def _lxplus_off_on_afs() -> bool:
+    return oscompat.lxplus_unsupported() == oscompat.LXPLUS_ON_AFS
+
+
 async def check_lxplus(settings: Settings) -> Check:
     if unsupported := oscompat.lxplus_unsupported():
-        return Check(MISSING, unsupported)
+        # On lxplus itself the tools are off by design, not missing
+        off = unsupported == oscompat.LXPLUS_ON_AFS
+        return Check(OK, LXPLUS_OFF_ON_AFS) if off else Check(MISSING, unsupported)
     if settings.ssh_executable is None:
         return Check(MISSING, "ssh not installed")
     target = lxplus_target(settings)
@@ -259,7 +268,7 @@ async def gather_status(settings: Settings, *, live: bool) -> list[tuple[str, Ch
     rows: list[tuple[str, Check]] = [("sso", check_sso(settings))]
     kerberos, grid = await asyncio.gather(check_kerberos(settings), check_grid(settings))
     rows += [("kerberos", kerberos), ("grid", grid)]
-    if live:
+    if live or _lxplus_off_on_afs():
         rows.append(("lxplus", await check_lxplus(settings)))
     elif settings.lxplus_user:
         alive = await lxplus_master_alive(settings)

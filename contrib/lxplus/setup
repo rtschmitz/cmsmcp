@@ -4,8 +4,8 @@
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)
-WRAPPER=$REPO/contrib/lxplus/cmsmcp-lxplus
-DATA=$HOME/private/cmsmcp                         # ~/private: no access for other users
+DATA=$HOME/private/cmsmcp      # cmsmcp's own default with an AFS home (no access for other users)
+BIN=$HOME/.local/bin           # on PATH on lxplus
 export UV_PYTHON_INSTALL_DIR=$DATA/uv-python      # uv's Python has the headers gssapi needs
 export UV_LINK_MODE=copy                          # no hard links across filesystems
 export UV_CACHE_DIR=${UV_CACHE_DIR:-/tmp/$USER/uv-cache}   # keep the download cache off AFS
@@ -28,19 +28,26 @@ PLAYWRIGHT_BROWSERS_PATH=$DATA/pw .venv/bin/playwright install --only-shell chro
 
 mkdir -p "$DATA/config" "$DATA/state" && chmod 700 "$DATA" "$DATA/config" "$DATA/state"
 
+mkdir -p "$BIN"
+CMD=$BIN/cmsmcp
+if [ -e "$CMD" ] && [ ! -L "$CMD" ]; then
+    CMD=$REPO/.venv/bin/cmsmcp
+    echo "Note: $BIN/cmsmcp exists and is not a link, so it was left alone."
+else
+    ln -sfn "$REPO/.venv/bin/cmsmcp" "$CMD"
+fi
+
 cat <<EOF
 
-cmsmcp is installed. Register this command as a stdio MCP server in your client:
-  $WRAPPER
-  Claude Code: claude mcp add -s user cmsmcp -- $WRAPPER
-  JSON config: {"mcpServers": {"cmsmcp": {"command": "$WRAPPER"}}}
-Use the same command for everything else, e.g. "$WRAPPER doctor".
+cmsmcp is installed as $CMD. Register it as a stdio MCP server in your client:
+  Claude Code: claude mcp add -s user cmsmcp -- $CMD
+  JSON config: {"mcpServers": {"cmsmcp": {"command": "$CMD"}}}
 EOF
 
 if [ -t 0 ] && [ -t 1 ]; then
     read -r -p "Sign in to CERN SSO now (Kerberos ticket + 2FA code)? [Y/n] " answer
     case ${answer:-y} in
-        [Yy]*) exec "$WRAPPER" login ;;
+        [Yy]*) exec "$CMD" login ;;
     esac
 fi
-echo "Sign in when ready: $WRAPPER login"
+echo "Sign in when ready: cmsmcp login"

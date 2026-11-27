@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
-from cmsmcp import __version__, routing
+from cmsmcp import __version__, oscompat, routing
 from cmsmcp.auth.browser import (
     FETCH_DEFAULT_TIMEOUT_SECONDS,
     FETCH_MAX_CHARS_LIMIT,
@@ -323,6 +323,7 @@ def build_server(  # noqa: C901 - per-tool registration blocks dominate the bran
 
 def main() -> None:
     """Run cmsmcp over MCP stdio, or ``cmsmcp login`` for terminal sign-in."""
+    oscompat.prepare_environment()
     if sys.argv[1:2] and sys.argv[1] != "serve":
         from cmsmcp.cli import main as cli_main  # noqa: PLC0415 - keep server startup lean
 

@@ -131,3 +131,70 @@ def test_off_linux_trust_includes_cern_grid_ca() -> None:
 def test_linux_trust_is_the_plain_system_context() -> None:
     plain = ssl.create_default_context()
     assert len(oscompat.trust_context().get_ca_certs()) == len(plain.get_ca_certs())
+
+
+# --- AFS home (CERN lxplus) ---------------------------------------------------
+
+
+@pytest.fixture
+def afs_home(linux: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:  # noqa: ARG001
+    afs = tmp_path / "afs"
+    home = afs / "cern.ch" / "user" / "j" / "jdoe"
+    (home / "private").mkdir(parents=True)
+    monkeypatch.setattr(oscompat, "_AFS_ROOT", afs)
+    monkeypatch.setenv("HOME", str(home))
+    for name in (
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+        "X509_USER_PROXY",
+        "PLAYWRIGHT_BROWSERS_PATH",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    return home
+
+
+def test_afs_home_defaults(afs_home: Path) -> None:
+    data = afs_home / "private" / "cmsmcp"
+    assert oscompat.afs_data_dir() == data
+    assert oscompat.default_proxy_path() == afs_home / f"x509up_u{os.getuid()}"
+    assert oscompat.lxplus_unsupported() == oscompat.LXPLUS_ON_AFS
+    oscompat.prepare_environment()
+    assert os.environ["PLAYWRIGHT_BROWSERS_PATH"] == str(data / "pw")
+
+
+def test_afs_home_respects_explicit_settings(
+    afs_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("X509_USER_PROXY", "/elsewhere/proxy")
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "/elsewhere/pw")
+    assert oscompat.default_proxy_path() == Path("/elsewhere/proxy")
+    oscompat.prepare_environment()
+    assert os.environ["PLAYWRIGHT_BROWSERS_PATH"] == "/elsewhere/pw"
+    # lxplus tools work again once the state (socket) directory is off AFS
+    monkeypatch.setenv("CMSMCP_STATE_DIR", str(tmp_path / "local-state"))
+    assert oscompat.lxplus_unsupported() is None
+    monkeypatch.setenv("CMSMCP_STATE_DIR", str(afs_home / "state"))
+    assert oscompat.lxplus_unsupported() == oscompat.LXPLUS_ON_AFS
+
+
+def test_afs_home_without_private_or_off_afs_keeps_linux_defaults(
+    afs_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (afs_home / "private").rmdir()
+    assert oscompat.afs_data_dir() is None
+    elsewhere = tmp_path / "home" / "jdoe"
+    (elsewhere / "private").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(elsewhere))
+    assert oscompat.afs_data_dir() is None
+    assert oscompat.default_proxy_path() == Path(f"/tmp/x509up_u{os.getuid()}")  # noqa: S108
+    assert oscompat.lxplus_unsupported() is None
+    oscompat.prepare_environment()
+    assert "PLAYWRIGHT_BROWSERS_PATH" not in os.environ
+
+
+async def test_afs_status_reports_lxplus_tools_off(afs_home: Path, tmp_path: Path) -> None:  # noqa: ARG001
+    from cmsmcp.config.settings import Settings  # noqa: PLC0415
+    from cmsmcp.credentials import LXPLUS_OFF_ON_AFS, OK, gather_status  # noqa: PLC0415
+
+    rows = dict(await gather_status(Settings(state_dir=tmp_path / "state"), live=False))
+    assert (rows["lxplus"].state, rows["lxplus"].detail) == (OK, LXPLUS_OFF_ON_AFS)
