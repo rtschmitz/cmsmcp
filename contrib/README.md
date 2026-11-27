@@ -1,6 +1,6 @@
 # contrib
 
-Standalone helpers that sit next to cmsmcp but do not depend on it.
+Helpers that sit next to cmsmcp: `claude-remote` is standalone, `lxplus/setup` installs this checkout on lxplus.
 
 ## `claude-remote` — Claude Code on a remote directory
 
@@ -104,3 +104,7 @@ alias claude-eos='claude-remote <user>@lxplus.cern.ch:/eos/user/<u>/<user>/<proj
 | macOS: mount fails with a FUSE/permission error | macFUSE: allow the extension in System Settings → Privacy & Security and reboot. FUSE-T: reinstall the cask. Also grant your terminal access to network volumes if macOS asks. |
 | `unix_listener: path … too long for Unix domain socket` | Your home path plus host name exceeds the socket length limit (104 bytes on macOS). Use a short `~/.ssh/config` alias as HOST. |
 | `unknown option` from sshfs | Remove that entry from `CLAUDE_REMOTE_SSHFS_OPTS`. |
+
+## `lxplus/setup` — cmsmcp on CERN lxplus
+
+Installs cmsmcp from this clone. See [CERN lxplus setup](../README.md#cern-lxplus-setup).

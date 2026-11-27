@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from cmsmcp import oscompat
 from cmsmcp.config.settings import Settings
 
 
@@ -51,3 +52,28 @@ def test_cwd_dotenv_cannot_disable_sso(monkeypatch: pytest.MonkeyPatch, tmp_path
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("CMSMCP_REQUIRE_SSO", raising=False)
     assert Settings().require_sso is True
+
+
+def test_afs_home_defaults_live_in_private(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    afs = tmp_path / "afs"
+    home = afs / "cern.ch" / "user" / "j" / "jdoe"
+    (home / "private").mkdir(parents=True)
+    monkeypatch.setattr(oscompat, "_AFS_ROOT", afs)
+    monkeypatch.setenv("HOME", str(home))
+    for name in ("CMSMCP_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "X509_USER_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+    data = home / "private" / "cmsmcp"
+    proxy = home / f"x509up_u{oscompat.os.getuid()}"
+
+    settings = Settings()
+    assert settings.config_dir == data / "config"
+    assert settings.state_dir == data / "state"
+    assert settings.grid_cert_file == proxy
+    assert settings.grid_key_file == proxy
+
+    monkeypatch.setenv("CMSMCP_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
+    explicit = Settings(grid_cert_file=tmp_path / "cert.pem")
+    assert explicit.config_dir == tmp_path / "cfg"
+    assert explicit.state_dir == tmp_path / "xdg" / "cmsmcp"
+    assert explicit.grid_cert_file == tmp_path / "cert.pem"

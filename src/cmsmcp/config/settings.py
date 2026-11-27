@@ -51,6 +51,9 @@ def default_config_dir() -> Path:
     explicit = os.environ.get("CMSMCP_CONFIG_DIR")
     if explicit:
         return Path(explicit).expanduser()
+    afs = oscompat.afs_data_dir()
+    if afs is not None and not os.environ.get("XDG_CONFIG_HOME"):
+        return afs / "config"
     return oscompat.config_root() / "cmsmcp"
 
 
@@ -107,6 +110,9 @@ class SecretFilesSource(PydanticBaseSettingsSource):
 
 
 def _default_state_dir() -> Path:
+    afs = oscompat.afs_data_dir()
+    if afs is not None and not os.environ.get("XDG_STATE_HOME"):
+        return afs / "state"
     return oscompat.state_root() / "cmsmcp"
 
 
@@ -116,8 +122,21 @@ def _default_browser_executable() -> str | None:
     )
 
 
+CVMFS_DASGOCLIENT = Path("/cvmfs/cms.cern.ch/common/dasgoclient")
+
+
 def _default_dasgoclient() -> str | None:
-    return shutil.which("dasgoclient")
+    found = shutil.which("dasgoclient")
+    if found is None and CVMFS_DASGOCLIENT.is_file():
+        return str(CVMFS_DASGOCLIENT)  # CMS CVMFS, not always on an MCP client's PATH
+    return found
+
+
+def _default_grid_file(name: str) -> Path:
+    """``~/.globus/<name>``; with an AFS home (lxplus) the VOMS proxy in the home directory."""
+    if oscompat.afs_data_dir() is not None:
+        return oscompat.default_proxy_path()
+    return Path.home() / ".globus" / name
 
 
 class Settings(BaseSettings):
@@ -272,8 +291,8 @@ class Settings(BaseSettings):
     # DAS: serviced by the dasgoclient CLI (GSI client-certificate auth), not
     # by the SSO-cookie HTTP client. cert/key default to ~/.globus.
     dasgoclient_path: str | None = Field(default_factory=_default_dasgoclient)
-    grid_cert_file: Path = Field(default_factory=lambda: Path.home() / ".globus" / "usercert.pem")
-    grid_key_file: Path = Field(default_factory=lambda: Path.home() / ".globus" / "userkey.pem")
+    grid_cert_file: Path = Field(default_factory=lambda: _default_grid_file("usercert.pem"))
+    grid_key_file: Path = Field(default_factory=lambda: _default_grid_file("userkey.pem"))
     # Hosts the CMS web front-end authenticates with an X509 grid client
     # certificate over TLS (no SSO-cookie flow exists there): requests to one
     # of these hosts go through a lazy SSL context that loads the cert/key
