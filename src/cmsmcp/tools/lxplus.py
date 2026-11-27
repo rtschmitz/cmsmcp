@@ -1,29 +1,22 @@
-"""MCP registration for lxplus (Kerberos SSH): read tools and confirmed actions."""
+"""MCP registration for lxplus (Kerberos SSH): read-only tools."""
 
 from __future__ import annotations
 
 from typing import Annotated
 
-from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
 from cmsmcp.adapters import lxplus
 from cmsmcp.config.settings import Settings
 from cmsmcp.contracts.results import ToolEnvelope
-from cmsmcp.policy import Effect, Policy
 from cmsmcp.tools.common import enveloped
 
 _SETUP = "Needs a Kerberos ticket and `cmsmcp setup lxplus`."
-_APPROVAL = Annotated[
-    str | None,
-    Field(description="Only after the user ran `cmsmcp approve <id>`: that id."),
-]
 
 
-def register_lxplus_tools(  # noqa: C901 - one closure per tool
-    server: MCPServer, settings: Settings, policy: Policy
-) -> None:
-    """Register lxplus tools (reads always; actions only when enabled)."""
+def register_lxplus_tools(server: MCPServer, settings: Settings) -> None:
+    """Register the read-only lxplus tools."""
 
     @server.tool(
         name="lxplus_eos_ls",
@@ -98,116 +91,3 @@ def register_lxplus_tools(  # noqa: C901 - one closure per tool
         return await enveloped(
             lambda: lxplus.crab_status(settings, cmssw_src=cmssw_src, task_dir=task_dir)
         )
-
-    # ------------------------------------------------------------- actions
-    @server.tool(
-        name="lxplus_crab_resubmit",
-        effect=Effect.ACT_OWN,
-        description="`crab resubmit` the failed jobs of one CRAB task (confirmed). " + _SETUP,
-    )
-    async def lxplus_crab_resubmit(
-        cmssw_src: str, task_dir: str, ctx: Context, approval_id: _APPROVAL = None
-    ) -> ToolEnvelope:
-        async def run() -> dict:
-            lxplus.crab_script(settings, cmssw_src, task_dir, "resubmit")  # validate first
-            approval = await policy.confirm(
-                ctx,
-                tool="lxplus_crab_resubmit",
-                summary=f"crab resubmit -d {task_dir} on lxplus",
-                details={"cmssw_src": cmssw_src, "task_dir": task_dir},
-                hosts=("lxplus",),
-                approval_id=approval_id,
-            )
-            return await lxplus.crab_resubmit(
-                settings, cmssw_src=cmssw_src, task_dir=task_dir, approval=approval
-            )
-
-        return await enveloped(run)
-
-    @server.tool(
-        name="lxplus_condor_submit",
-        effect=Effect.ACT_OWN,
-        description=(
-            "Submit an existing HTCondor submit file from the user's own AFS/EOS area. The "
-            "user confirms the file's hash and first lines; the hash is re-checked before "
-            "submitting. " + _SETUP
-        ),
-    )
-    async def lxplus_condor_submit(
-        submit_file: str, ctx: Context, approval_id: _APPROVAL = None
-    ) -> ToolEnvelope:
-        async def run() -> dict:
-            # The user confirms the file's content (hash + first lines), and the
-            # hash is re-checked on lxplus right before condor_submit runs.
-            seen = await lxplus.inspect_submit_file(settings, submit_file=submit_file)
-            approval = await policy.confirm(
-                ctx,
-                tool="lxplus_condor_submit",
-                summary=f"condor_submit {seen['submit_file']} on lxplus",
-                details=seen,
-                hosts=("lxplus",),
-                approval_id=approval_id,
-            )
-            return await lxplus.condor_submit(
-                settings,
-                submit_file=seen["submit_file"],
-                sha256=seen["sha256"],
-                approval=approval,
-            )
-
-        return await enveloped(run)
-
-    @server.tool(
-        name="lxplus_condor_remove",
-        effect=Effect.ACT_OWN,
-        description="Remove one of the user's HTCondor jobs/clusters (confirmed). " + _SETUP,
-    )
-    async def lxplus_condor_remove(
-        job_id: str, ctx: Context, approval_id: _APPROVAL = None
-    ) -> ToolEnvelope:
-        async def run() -> dict:
-            job = lxplus.check_job_id(job_id)
-            approval = await policy.confirm(
-                ctx,
-                tool="lxplus_condor_remove",
-                summary=f"condor_rm {job} on lxplus",
-                details={"job_id": job},
-                hosts=("lxplus",),
-                approval_id=approval_id,
-            )
-            return await lxplus.condor_remove(settings, job_id=job, approval=approval)
-
-        return await enveloped(run)
-
-    @server.tool(
-        name="lxplus_run",
-        effect=Effect.ACT_EXTERNAL,
-        description=(
-            "Run one shell command on lxplus as the user, after the user confirms the exact "
-            "command. Prefer the specific lxplus_* tools; use this for anything else "
-            "(e.g. `dasgoclient`, `ls` in a work area). A best-effort filter refuses "
-            "commands that visibly touch credentials; the user's confirmation is the "
-            "real control. " + _SETUP
-        ),
-    )
-    async def lxplus_run(
-        command: str,
-        ctx: Context,
-        timeout_seconds: Annotated[int, Field(ge=5, le=900)] = 120,
-        approval_id: _APPROVAL = None,
-    ) -> ToolEnvelope:
-        async def run() -> dict:
-            checked = lxplus.check_generic_command(command)
-            approval = await policy.confirm(
-                ctx,
-                tool="lxplus_run",
-                summary="run a command on lxplus",
-                details={"command": checked, "timeout_seconds": timeout_seconds},
-                hosts=("lxplus",),
-                approval_id=approval_id,
-            )
-            return await lxplus.run_command_on_lxplus(
-                settings, command=checked, approval=approval, timeout_seconds=timeout_seconds
-            )
-
-        return await enveloped(run)

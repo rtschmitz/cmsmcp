@@ -8,7 +8,6 @@ from cmsmcp.auth.service import AuthService
 from cmsmcp.config.settings import Settings
 from cmsmcp.net.client import SafeHttpClient
 from cmsmcp.policy import Policy
-from cmsmcp.tools.actions import register_action_tools
 from cmsmcp.tools.cds import register_cds_tools
 from cmsmcp.tools.cmsonline import register_cmsonline_tools
 from cmsmcp.tools.cmsresults import register_cmsresults_tools
@@ -57,8 +56,7 @@ def register_adapter_tools(
     policy = policy or Policy(settings)
     register_search_tools(server, settings, auth, http, policy)
     register_mine_tools(server, settings, auth, http, policy)
-    register_lxplus_tools(server, settings, policy)
-    register_action_tools(server, settings, auth, http, policy)
+    register_lxplus_tools(server, settings)
     register_github_tools(server, http)
     register_rucio_tools(server, settings, http)
     register_indico_tools(server, settings, auth, http)

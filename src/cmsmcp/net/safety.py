@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 from cmsmcp.contracts.errors import PolicyViolationError
 
@@ -100,3 +101,150 @@ def redact_url(url: str) -> str:
     if "@" in netloc:
         netloc = netloc.rsplit("@", maxsplit=1)[1]
     return urlunsplit((parsed.scheme, netloc, parsed.path, urlencode(pairs), ""))
+
+
+# ------------------------------------------------------------- read-only URLs
+# GET/HEAD alone does not make a request read-only: some CERN services change
+# state on a plain GET. McM's REST API approves, resets, clones and deletes
+# requests by GET; TWiki and DocDB CGI scripts act on query parameters; a GET
+# to a logout endpoint ends the user's session. The HTTP client checks every
+# request and redirect hop against the host-specific rules below; ``strict``
+# adds generic action-verb rules for URLs an agent chose (generic page and
+# file fetches, every request of the headless page browser), where a false
+# positive costs one refused fetch.
+
+_LOGOUT_SEGMENTS = frozenset({"logout", "log_out", "log-out", "logoff", "signout", "sign_out"})
+_MCM_READ_ACTIONS = frozenset({"get", "output", "produces", "search", "fetch"})
+_TWIKI_READ_SCRIPTS = frozenset({"view", "viewauth", "viewfile", "rdiff", "oops"})
+_DOCDB_WRITE_MARKERS = ("process", "upload", "delete", "clone", "modify", "addfiles")
+_METHOD_OVERRIDE_KEYS = frozenset({"_method", "x-http-method-override"})
+_ACTION_QUERY_KEYS = frozenset({"action", "do", "op", "cmd", "command", "method", "_action"})
+_ACTION_VERBS = frozenset(
+    {
+        "abort", "accept", "acknowledge", "approve", "cancel", "clone", "create", "decline",
+        "delete", "destroy", "follow", "grant", "inject", "invite", "join", "kill", "leave",
+        "lock", "publish", "register", "reject", "remove", "rename", "resubmit", "reset",
+        "revoke", "rewind", "save", "subscribe", "submit", "toggle", "unfollow", "unlock",
+        "unpublish", "unregister", "unsubscribe", "update", "upload", "vote",
+    }
+)  # fmt: skip
+
+
+def _refuse_state_change(url: str, why: str) -> PolicyViolationError:
+    return PolicyViolationError(
+        f"Refused {redact_url(url)}: {why}",
+        instructions=(
+            "cmsmcp is read-only and does not request URLs that can change state on the "
+            "server. Use the source's read tools (search/get/list) instead."
+        ),
+    )
+
+
+def _service_write_reason(host: str, segments: list[str]) -> str | None:
+    """Why a GET to this service path would change state, or None."""
+    if _LOGOUT_SEGMENTS.intersection(segments):
+        return "logout endpoint"
+    if host.startswith("cms-pdmv") and "restapi" in segments:
+        index = segments.index("restapi")
+        action = segments[index + 2] if len(segments) > index + 2 else "get"
+        if not (action.startswith("get") or action in _MCM_READ_ACTIONS):
+            return f"McM REST action {action!r} is not a read"
+    if host == "twiki.cern.ch" and segments[:2] == ["twiki", "bin"] and segments[2:]:
+        script = re.sub(r"\.(pl|cgi)$", "", segments[2])
+        if script not in _TWIKI_READ_SCRIPTS:
+            return f"TWiki script {script!r} is not a read"
+    if "docdb" in host and "cgi-bin" in segments:
+        script = segments[-1]
+        if any(marker in script for marker in _DOCDB_WRITE_MARKERS):
+            return f"DocDB script {script!r} is not a read"
+    return None
+
+
+def check_read_only_url(url: str, *, strict: bool = False) -> str:
+    """Refuse URLs known to change server state even on GET; return ``url``."""
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower()
+    segments = [unquote(part).lower() for part in parsed.path.split("/") if part]
+    query = [(key.lower(), value.lower()) for key, value in parse_qsl(parsed.query)]
+    if any(key in _METHOD_OVERRIDE_KEYS and value not in {"get", "head"} for key, value in query):
+        raise _refuse_state_change(url, "HTTP method override in the query")
+    if reason := _service_write_reason(host, segments):
+        raise _refuse_state_change(url, reason)
+    if strict:
+        if verbs := _ACTION_VERBS.intersection(segments):
+            raise _refuse_state_change(url, f"action path segment {sorted(verbs)[0]!r}")
+        if any(key in _ACTION_QUERY_KEYS and value in _ACTION_VERBS for key, value in query):
+            raise _refuse_state_change(url, "action verb in the query")
+    return url
+
+
+# ------------------------------------------------------------ read-only POSTs
+# A few services expose their *search* only as POST. These are the only POST
+# endpoints cmsmcp ever calls (path patterns; the host is additionally bound by
+# each call site's allowlist). Adding one is a reviewed change: it must be a
+# query that never changes server state.
+READ_ONLY_POST_PATHS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"/api/now/sp/search"),  # ServiceNow service-portal search
+    re.compile(r"/api/v4/teams/[A-Za-z0-9]+/posts/search"),  # Mattermost post search
+    re.compile(r"/api/(runs|datasets)_filtered_ordered"),  # Run Registry filtered lists
+    re.compile(r"/api/lumisections/rr_lumisection_ranges(_by_component)?"),  # RR LS ranges
+    re.compile(r"/Elog/json\.do"),  # CMS Online E-Log search (DataTables)
+    re.compile(r"/webcenter/portal/cmsonline/pages_common/shiftlist"),  # shift list date
+)
+
+
+def check_read_only_post(url: str) -> str:
+    """Allow a POST only to a registered read-only query endpoint."""
+    path = urlsplit(url).path
+    if not any(pattern.fullmatch(path) for pattern in READ_ONLY_POST_PATHS):
+        raise PolicyViolationError(
+            f"POST to {redact_url(url)} is not a registered read-only query endpoint"
+        )
+    return url
+
+
+# ------------------------------------------------------------ headless browser
+_SAML_FIELDS = frozenset({"samlresponse", "samlrequest", "relaystate", "sigalg", "signature"})
+_OIDC_RESPONSE_FIELDS = frozenset(
+    {"code", "state", "session_state", "iss", "id_token", "error", "error_description"}
+)
+_BROWSER_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def browser_request_allowed(
+    method: str,
+    url: str,
+    *,
+    post_data: str | None,
+    navigation: bool,
+    identity_hosts: Iterable[str],
+) -> bool:
+    """Whether the read-only page browser may send this request.
+
+    Reads (GET/HEAD/OPTIONS) pass unless the URL is a known state change. The
+    only POSTs that pass are the sign-in plumbing a page needs to load: the
+    Keycloak token endpoint (PKCE code exchange / refresh) and a navigation
+    that posts back nothing but a SAML or OIDC sign-in response. Everything
+    else (form submits, XHR writes, PUT/PATCH/DELETE) is blocked.
+    """
+    verb = method.upper()
+    try:
+        check_read_only_url(url, strict=True)
+    except PolicyViolationError:
+        return False
+    if verb in _BROWSER_READ_METHODS:
+        return True
+    if verb != "POST":
+        return False
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower()
+    if host in {h.lower() for h in identity_hosts} and parsed.path.endswith(
+        "/protocol/openid-connect/token"
+    ):
+        return True
+    if not navigation or not post_data:
+        return False
+    fields = {key.lower() for key, _ in parse_qsl(post_data, keep_blank_values=True)}
+    saml = fields <= _SAML_FIELDS and bool(fields & {"samlresponse", "samlrequest"})
+    oidc = fields <= _OIDC_RESPONSE_FIELDS and bool(fields & {"code", "id_token"})
+    return saml or oidc

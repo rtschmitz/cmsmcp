@@ -1,4 +1,4 @@
-"""CLI: guided setup, config/secret storage, status, logout, approve."""
+"""CLI: guided setup, config/secret storage, status, logout."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from cmsmcp import cli
 from cmsmcp.cli import (
     IO,
     Setup,
-    cmd_approve,
     cmd_logout,
     live_token_check,
     set_option,
@@ -22,7 +21,6 @@ from cmsmcp.cli import (
 )
 from cmsmcp.config.settings import Settings, config_file, secrets_dir
 from cmsmcp.credentials import FAIL, OK, TOKENS_BY_NAME, Check, format_status, gather_status
-from cmsmcp.policy import PendingApprovals
 
 
 def _io(answers: list[str], secrets: list[str] | None = None) -> tuple[IO, list[str]]:
@@ -79,17 +77,13 @@ def test_rejected_token_is_removed(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
 
 def test_policy_step_writes_choices(tmp_path: Path) -> None:
-    io, _ = _io(["y", "y", "a"])
+    io, said = _io(["y"])
     Setup(io, lambda: Settings(state_dir=tmp_path)).step_policy()
-    settings = Settings(state_dir=tmp_path)
-    assert settings.personal_sources == ("mattermost_dm",)
-    assert settings.actions_enabled is True
-    assert settings.confirm_mode == "approve"
-    io, _ = _io(["n", "n"])
+    assert Settings(state_dir=tmp_path).personal_sources == ("mattermost_dm",)
+    assert not any("action" in line.lower() for line in said)
+    io, _ = _io(["n"])
     Setup(io, lambda: Settings(state_dir=tmp_path)).step_policy()
-    settings = Settings(state_dir=tmp_path)
-    assert settings.personal_sources == ()
-    assert settings.actions_enabled is False
+    assert Settings(state_dir=tmp_path).personal_sources == ()
 
 
 def test_unknown_setup_step(tmp_path: Path) -> None:
@@ -99,23 +93,27 @@ def test_unknown_setup_step(tmp_path: Path) -> None:
 
 
 @respx.mock
-def test_gitlab_write_scope_rejected_when_actions_off(tmp_path: Path) -> None:
-    respx.get("https://gitlab.cern.ch/api/v4/personal_access_tokens/self").mock(
+def test_gitlab_write_scope_rejected(tmp_path: Path) -> None:
+    route = respx.get("https://gitlab.cern.ch/api/v4/personal_access_tokens/self")
+    route.mock(
         return_value=httpx.Response(200, json={"scopes": ["api"], "expires_at": "2027-01-01"})
     )
     spec = TOKENS_BY_NAME["gitlab"]
-    off = Settings(state_dir=tmp_path, gitlab_token="glpat-x")
-    assert asyncio.run(live_token_check(off, spec)).state == FAIL
-    on = Settings(state_dir=tmp_path, gitlab_token="glpat-x", actions_enabled=True)
-    verdict = asyncio.run(live_token_check(on, spec))
-    assert verdict.state == OK and "api" in verdict.detail
+    settings = Settings(state_dir=tmp_path, gitlab_token="glpat-x")
+    assert asyncio.run(live_token_check(settings, spec)).state == FAIL
+    route.mock(
+        return_value=httpx.Response(200, json={"scopes": ["read_api"], "expires_at": "2027-01-01"})
+    )
+    verdict = asyncio.run(live_token_check(settings, spec))
+    assert verdict.state == OK and "read_api" in verdict.detail
 
 
 def test_status_rows_cover_every_credential(tmp_path: Path) -> None:
     rows = asyncio.run(gather_status(Settings(state_dir=tmp_path), live=False))
     names = [name for name, _ in rows]
     assert names[:4] == ["sso", "kerberos", "grid", "lxplus"]
-    assert {"gitlab", "indico", "jira", "github", "actions"} <= set(names)
+    assert {"gitlab", "indico", "github", "actions"} <= set(names)
+    assert "jira" not in names  # no Jira token: Jira reads use the SSO session
     assert "mattermost" not in names  # Mattermost uses the SSO session only
     assert "sso" in format_status(rows)
 
@@ -126,16 +124,6 @@ def test_logout_removes_named_tokens(tmp_path: Path) -> None:
     assert cmd_logout(Settings(state_dir=tmp_path), ["gitlab"], everything=False, purge=False) == 0
     assert not (secrets_dir() / "gitlab_token").exists()
     assert (secrets_dir() / "indico_api_token").exists()
-
-
-def test_approve_marks_pending_action(tmp_path: Path) -> None:
-    settings = Settings(state_dir=tmp_path)
-    queue = PendingApprovals(tmp_path / "pending-actions.json")
-    key = queue.add("mattermost_post", "post hi", {"message": "hi"}, "d1")
-    io, said = _io(["y"])
-    assert cmd_approve(settings, None, deny=False, io=io) == 0
-    assert queue.load()[key]["approved"] is True
-    assert any(f"approval_id={key}" in line for line in said)
 
 
 def test_default_setup_runs_only_core_and_lists_extras(tmp_path: Path) -> None:
@@ -153,8 +141,8 @@ def test_default_setup_runs_only_core_and_lists_extras(tmp_path: Path) -> None:
     for name in ("kerberos", "lxplus", "rucio", "policy"):
         setattr(setup, f"step_{name}", lambda n=name: steps.append(n))
     setup.run([], tier="tokens")
-    assert steps == ["sso"] + ["token"] * 3  # GitLab, Indico, GitHub; Jira only under --all
+    assert steps == ["sso"] + ["token"] * 3  # GitLab, Indico, GitHub
     steps.clear()
     setup.run([], tier="all")
     assert steps[0] == "sso" and {"kerberos", "grid", "policy"} <= set(steps)
-    assert steps.count("token") == 4  # the three read tokens plus Jira
+    assert steps.count("token") == 3  # the three read tokens

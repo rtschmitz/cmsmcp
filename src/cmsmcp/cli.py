@@ -1,18 +1,17 @@
-"""``cmsmcp`` command line: serve, login, setup, status, doctor, logout, audit, approve.
+"""``cmsmcp`` command line: serve, login, connect, setup, status, doctor, logout, audit.
 
 ``cmsmcp`` with no arguments runs the MCP server over stdio (what MCP clients
 launch). Everything else is for the human at the terminal:
 
 - ``setup [step...]``: guided pass over every credential (SSO, Kerberos,
-  lxplus, grid proxy, personal API tokens, personal-data and action
-  settings). Each step says what it unlocks, opens the page where the token is
-  created, reads secrets without echo, verifies, and stores them in private
-  files under ``~/.config/cmsmcp``. Every step can be skipped.
+  lxplus, grid proxy, personal read-only API tokens, personal-data opt-ins).
+  Each step says what it unlocks, opens the page where the token is created,
+  reads secrets without echo, verifies, and stores them in private files
+  under ``~/.config/cmsmcp``. Every step can be skipped.
 - ``status`` / ``doctor``: what works right now (``doctor`` also contacts the
   services and checks token scopes).
 - ``logout``: remove stored credentials (``--purge`` also clears logs/caches).
 - ``audit``: show the local log of tool calls.
-- ``approve``: review and approve actions an agent parked for confirmation.
 """
 
 from __future__ import annotations
@@ -25,7 +24,6 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 import webbrowser
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -52,20 +50,17 @@ from cmsmcp.credentials import (
     lxplus_target,
     ssh_options,
 )
-from cmsmcp.policy import PendingApprovals, printable
 
-COMMANDS = ("login", "connect", "setup", "status", "doctor", "logout", "audit", "approve", "serve")
+COMMANDS = ("login", "connect", "setup", "status", "doctor", "logout", "audit", "serve")
 # Core: what nearly every tool needs. Everything else is optional and is set up
 # on demand: a tool that needs a missing credential answers with the exact
 # `cmsmcp setup <step>` to run, so nothing is asked up front.
 # Three tiers: `cmsmcp setup` = CERN SSO only; `--tokens` adds the long-lived
 # read tokens (GitLab, Indico, GitHub); `--all` adds Kerberos, lxplus, grid,
-# Rucio, the personal-data/actions policy and the Jira token, which only the
-# opt-in Jira comment action needs (Jira and Mattermost reads use the SSO session).
+# Rucio and the personal-data policy (Jira and Mattermost reads use the SSO session).
 CORE_STEPS = ("sso",)
-ACTION_TOKEN_STEPS = ("jira",)
-TOKEN_STEPS = tuple(t.name for t in TOKENS if t.name not in ACTION_TOKEN_STEPS)
-FULL_ONLY_STEPS = ("kerberos", "lxplus", "grid", "rucio", "policy", *ACTION_TOKEN_STEPS)
+TOKEN_STEPS = tuple(t.name for t in TOKENS)
+FULL_ONLY_STEPS = ("kerberos", "lxplus", "grid", "rucio", "policy")
 OPTIONAL_STEPS = TOKEN_STEPS + FULL_ONLY_STEPS
 SETUP_STEPS = CORE_STEPS + OPTIONAL_STEPS
 TIERS = {"sso": CORE_STEPS, "tokens": CORE_STEPS + TOKEN_STEPS, "all": SETUP_STEPS}
@@ -75,7 +70,7 @@ OPTIONAL_GUIDE = {
     "grid": "grid certificate / VOMS proxy (DAS, DQM GUI, Rucio)",
     **{t.name: t.unlocks for t in TOKENS},
     "rucio": "your Rucio account name",
-    "policy": "opt in to personal data (Mattermost DMs) and enable confirmed actions",
+    "policy": "opt in to personal data (Mattermost DMs)",
 }
 _WRITE_SCOPES = frozenset({"api", "write_repository", "sudo", "admin_mode"})
 
@@ -140,10 +135,6 @@ async def live_token_check(settings: Settings, spec: TokenSpec) -> Check:  # noq
             {"PRIVATE-TOKEN": token},
         ),
         "indico": (f"{settings.indico_base_url}/api/user/", {"Authorization": f"Bearer {token}"}),
-        "jira": (
-            "https://its.cern.ch/jira/rest/api/2/myself",
-            {"Authorization": f"Bearer {token}"},
-        ),
         "github": ("https://api.github.com/user", {"Authorization": f"Bearer {token}"}),
     }
     url, headers = probes[spec.name]
@@ -165,10 +156,10 @@ async def live_token_check(settings: Settings, spec: TokenSpec) -> Check:  # noq
     scopes = set(info.get("scopes") or [])
     expires = info.get("expires_at") or "never"
     writes = scopes & _WRITE_SCOPES
-    if writes and not settings.actions_enabled:
+    if writes:
         return Check(
             FAIL,
-            f"token has write scopes {sorted(writes)} but actions are disabled: "
+            f"token has write scopes {sorted(writes)}; cmsmcp only reads: "
             "create a read_api token instead",
         )
     return Check(OK, f"scopes {', '.join(sorted(scopes))}; expires {expires}")
@@ -349,11 +340,9 @@ class Setup:
     def step_policy(self) -> None:
         settings = self.settings
         self.io.say(
-            "Personal data and actions.\n"
+            "Personal data.\n"
             "  Personal sources (e.g. your Mattermost direct messages) stay hidden from the agent\n"
-            "  unless you opt in. Actions (posting, commenting, submitting jobs) are off by\n"
-            "  default and, when on, each one asks for your confirmation. If your agent host\n"
-            "  answers MCP prompts automatically (agent SDKs, headless runs), choose [a]."
+            "  unless you opt in."
         )
         dms = "mattermost_dm" in settings.personal_sources
         if _yes(
@@ -362,23 +351,6 @@ class Setup:
             set_option("personal_sources", "mattermost_dm")
         else:
             set_option("personal_sources", None)
-        if _yes(
-            self.io, "  Enable actions (each confirmed by you)?", default=settings.actions_enabled
-        ):
-            set_option("actions_enabled", "true")
-            mode = (
-                self.io.ask(
-                    "  Confirm actions [e] in the MCP client (falls back to `cmsmcp approve`) or "
-                    "[a] always in the terminal with `cmsmcp approve`? [e] "
-                )
-                .strip()
-                .lower()
-            )
-            set_option("confirm_mode", "approve" if mode.startswith("a") else "elicit")
-            self.io.say("  Jira comments also need a Jira token: `cmsmcp setup jira`.")
-        else:
-            set_option("actions_enabled", None)
-            set_option("confirm_mode", None)
 
 
 def dependency_problems(settings: Settings) -> list[str]:
@@ -460,7 +432,7 @@ def cmd_logout(settings: Settings, names: Sequence[str], *, everything: bool, pu
             (settings.state_dir / leftover).unlink(missing_ok=True)
         if settings.download_dir.exists():
             shutil.rmtree(settings.download_dir)
-        print("Purged the audit log, pending approvals, caches and downloads.")
+        print("Purged the audit log, caches and downloads.")
     return 0
 
 
@@ -476,38 +448,6 @@ def cmd_audit(settings: Settings, count: int) -> int:
             continue
         args = ", ".join(f"{k}={v}" for k, v in rec.get("args", {}).items())
         print(f"{rec.get('ts')} {rec.get('status'):<16} {rec.get('tool')}({args})")
-    return 0
-
-
-def cmd_approve(settings: Settings, key: str | None, *, deny: bool, io: IO | None = None) -> int:
-    io = io or IO()
-    queue = PendingApprovals(settings.state_dir / "pending-actions.json")
-    entries = {k: v for k, v in queue.load().items() if not v.get("used")}
-    if key:
-        entries = {k: v for k, v in entries.items() if k == key}
-        if not entries:
-            io.say(f"No pending action {key!r} (expired after 15 minutes, or already used).")
-            return 1
-    if not entries:
-        io.say("No actions are waiting for approval.")
-        return 0
-    for name, entry in entries.items():
-        age = int(time.time() - float(entry.get("created", 0)))
-        io.say(
-            f"\n[{name}] {printable(str(entry.get('tool')))}: "
-            f"{printable(str(entry.get('summary')))}  ({age}s ago)\n"
-            + json.dumps(entry.get("details"), indent=2, ensure_ascii=True)
-        )
-        if entry.get("approved"):
-            io.say("  already approved; the agent can run it.")
-            continue
-        approve = False if deny else _yes(io, "  Approve this exact action?", default=False)
-        queue.set_approved(name, approve)
-        io.say(
-            "  approved: tell the agent to retry with approval_id=" + name
-            if approve
-            else "  declined."
-        )
     return 0
 
 
@@ -534,7 +474,7 @@ def _parser() -> argparse.ArgumentParser:
         action="store_const",
         const="all",
         dest="tier",
-        help="everything: tokens, Kerberos, lxplus, grid, Rucio, personal data/actions, Jira token",
+        help="everything: tokens, Kerberos, lxplus, grid, Rucio, personal-data opt-ins",
     )
     sub.add_parser("status", help="what is configured (local checks)")
     sub.add_parser("doctor", help="test every connection and token")
@@ -544,9 +484,6 @@ def _parser() -> argparse.ArgumentParser:
     logout.add_argument("--purge", action="store_true", help="also clear logs, caches, downloads")
     audit = sub.add_parser("audit", help="recent tool calls")
     audit.add_argument("-n", type=int, default=40)
-    approve = sub.add_parser("approve", help="review actions waiting for your approval")
-    approve.add_argument("id", nargs="?")
-    approve.add_argument("--deny", action="store_true")
     return parser
 
 
@@ -567,14 +504,5 @@ def main(argv: Sequence[str]) -> int:  # noqa: PLR0911
         return cmd_logout(settings, args.names, everything=args.everything, purge=args.purge)
     if args.command == "audit":
         return cmd_audit(settings, args.n)
-    if args.command == "approve":
-        if not args.deny and not sys.stdin.isatty():
-            print(
-                "cmsmcp approve must be run by you in an interactive terminal "
-                "(it refuses piped input so an agent cannot approve its own actions).",
-                file=sys.stderr,
-            )
-            return 2
-        return cmd_approve(settings, args.id, deny=args.deny)
     print("Run `cmsmcp` without arguments to start the MCP server.", file=sys.stderr)
     return 2

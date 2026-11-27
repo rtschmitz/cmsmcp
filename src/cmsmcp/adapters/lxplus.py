@@ -5,12 +5,12 @@ credential delegation, non-interactive (``BatchMode``), no passwords or keys,
 and a 10-minute shared control connection so repeated tool calls reuse one
 login. Requires ``kinit`` and ``CMSMCP_LXPLUS_USER`` (``cmsmcp setup lxplus``).
 
-Read tools run fixed command shapes (``eos ls``, ``head -c``, ``condor_q``,
-...) whose arguments are validated and shell-quoted. Act tools (job
-submit/remove, a generic command) need an :class:`ApprovedAction` from the
-policy engine. A generic command that touches credential material (Kerberos
-caches, keytabs, SSH keys, grid keys/proxies, cmsmcp secrets) is refused even
-when approved.
+Read-only: every tool runs one fixed command shape (``eos ls``, ``head -c``,
+``cat``, ``condor_q``, ``condor_history``, ``crab status``, quota queries)
+whose arguments are validated and shell-quoted. There is no generic command,
+submit, remove or resubmit path; paths that point at credential material
+(Kerberos caches, keytabs, SSH keys, grid keys/proxies, cmsmcp secrets) or
+``~/private`` are refused.
 """
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ from cmsmcp.contracts.errors import (
 )
 from cmsmcp.credentials import ssh_options
 from cmsmcp.net.proc import CommandResult, run_command
-from cmsmcp.policy import ApprovedAction
 
 SOURCE = "lxplus"
 _PATH_RE = re.compile(r"^/(eos|afs|cvmfs)/[A-Za-z0-9._@+=,:/~ -]*$")
@@ -40,7 +39,6 @@ _JOB_RE = re.compile(r"^\d+(\.\d+)?$")
 _SSH_FAILURE = 255
 _TICKET_CACHE_SECONDS = 60.0
 _DEFAULT_OUTPUT_BYTES = 2 * 1024 * 1024
-_MAX_COMMAND_CHARS = 4_000
 _CREDENTIAL_PATTERNS = re.compile(
     r"krb5cc|keytab|\.ssh\b|id_(rsa|ed25519|ecdsa)|x509up|userkey|\.globus|"
     r"\.config/cmsmcp|cern-sso-storage-state|\bkdestroy\b|\bkinit\b",
@@ -104,20 +102,6 @@ def check_job_id(job_id: str) -> str:
     if not _JOB_RE.fullmatch(cleaned):
         raise InvalidInputError(
             f"bad HTCondor job id {job_id!r}", instructions="Use a cluster id like 1234 or 1234.0."
-        )
-    return cleaned
-
-
-def check_generic_command(command: str) -> str:
-    cleaned = command.strip()
-    if not cleaned:
-        raise InvalidInputError("command must not be empty")
-    if len(cleaned) > _MAX_COMMAND_CHARS:
-        raise InvalidInputError(f"command is too long ({_MAX_COMMAND_CHARS} characters max)")
-    if _CREDENTIAL_PATTERNS.search(cleaned):
-        raise PolicyViolationError(
-            "the command touches credential material (tickets, keys, proxies, secrets)",
-            instructions="cmsmcp never runs commands that read or change credentials.",
         )
     return cleaned
 
@@ -264,66 +248,8 @@ async def download_file(settings: Settings, *, path: str) -> dict[str, Any]:
     return {"remote_path": path, "path": str(target), "size_bytes": len(result.stdout)}
 
 
-def _approved(approval: ApprovedAction, tool: str) -> None:
-    if approval.tool != tool or not approval.allows_host(SOURCE):
-        raise PolicyViolationError("action approval does not cover this lxplus command")
-
-
-async def inspect_submit_file(settings: Settings, *, submit_file: str) -> dict[str, Any]:
-    """SHA-256 and the first lines of a submit file, shown in the confirmation."""
-    path = check_own_path(settings, submit_file)
-    script = (
-        f"sha256sum -- {shlex.quote(path)} | cut -d' ' -f1 && head -n 40 -- {shlex.quote(path)}"
-    )
-    result = await run_remote(settings, shell_command=script)
-    if result.exit_code != 0:
-        raise UpstreamError(f"cannot read {path}: {result.stderr.decode(errors='replace')[-300:]}")
-    digest, _, head = result.stdout.decode(errors="replace").partition("\n")
-    if not re.fullmatch(r"[0-9a-f]{64}", digest.strip()):
-        raise UpstreamError(f"could not hash {path}")
-    return {"submit_file": path, "sha256": digest.strip(), "first_lines": head[:4_000]}
-
-
-async def condor_submit(
-    settings: Settings, *, submit_file: str, sha256: str, approval: ApprovedAction
-) -> dict[str, Any]:
-    """Submit exactly the file the user saw: the hash is re-checked remotely."""
-    _approved(approval, "lxplus_condor_submit")
-    path = check_own_path(settings, submit_file)
-    if not re.fullmatch(r"[0-9a-f]{64}", sha256):
-        raise InvalidInputError("bad sha256")
-    name = shlex.quote(f"./{Path(path).name}")
-    script = (
-        f"cd {shlex.quote(str(Path(path).parent))}"
-        f" && echo {shlex.quote(f'{sha256}  ./{Path(path).name}')} | sha256sum -c --quiet"
-        f" && condor_submit {name}"
-    )
-    return _result(f"condor_submit {path}", await run_remote(settings, shell_command=script))
-
-
-async def condor_remove(
-    settings: Settings, *, job_id: str, approval: ApprovedAction
-) -> dict[str, Any]:
-    _approved(approval, "lxplus_condor_remove")
-    argv = ["condor_rm", check_job_id(job_id)]
-    return _result(shlex.join(argv), await run_remote(settings, argv))
-
-
-async def run_command_on_lxplus(
-    settings: Settings,
-    *,
-    command: str,
-    approval: ApprovedAction,
-    timeout_seconds: float | None = None,
-) -> dict[str, Any]:
-    _approved(approval, "lxplus_run")
-    command = check_generic_command(command)
-    result = await run_remote(settings, shell_command=command, timeout_seconds=timeout_seconds)
-    return _result(command, result)
-
-
-def crab_script(settings: Settings, cmssw_src: str, task_dir: str, subcommand: str) -> str:
-    """CRAB inside the user's *own* CMSSW area (cmsenv + CRAB from CVMFS).
+def crab_script(settings: Settings, cmssw_src: str, task_dir: str) -> str:
+    """``crab status`` inside the user's *own* CMSSW area (cmsenv + CRAB from CVMFS).
 
     ``scramv1 runtime`` output is eval'd and CRAB unpickles the task's request
     cache, so both directories must be the user's own: a path in another
@@ -338,18 +264,10 @@ def crab_script(settings: Settings, cmssw_src: str, task_dir: str, subcommand: s
         f" && cd {shlex.quote(src)}"
         " && eval $(scramv1 runtime -sh)"
         " && source /cvmfs/cms.cern.ch/common/crab-setup.sh"
-        f" && crab {subcommand} -d {shlex.quote(task)}"
+        f" && crab status -d {shlex.quote(task)}"
     )
 
 
 async def crab_status(settings: Settings, *, cmssw_src: str, task_dir: str) -> dict[str, Any]:
-    script = crab_script(settings, cmssw_src, task_dir, "status")
+    script = crab_script(settings, cmssw_src, task_dir)
     return _result(f"crab status -d {task_dir}", await run_remote(settings, shell_command=script))
-
-
-async def crab_resubmit(
-    settings: Settings, *, cmssw_src: str, task_dir: str, approval: ApprovedAction
-) -> dict[str, Any]:
-    _approved(approval, "lxplus_crab_resubmit")
-    script = crab_script(settings, cmssw_src, task_dir, "resubmit")
-    return _result(f"crab resubmit -d {task_dir}", await run_remote(settings, shell_command=script))

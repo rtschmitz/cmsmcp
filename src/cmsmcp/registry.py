@@ -4,12 +4,12 @@
 ``@server.tool(name=..., description=...)`` registration (160+ tools across the
 adapter modules) passes through one place that:
 
-1. skips tools whose group is not in the enabled profiles, and act tools when
-   actions are disabled;
+1. skips tools whose group is not in the enabled profiles, and refuses to
+   register any tool whose effect is not a read (cmsmcp is read-only);
 2. registers the tool as *unstructured* (no ``outputSchema`` in the tool list,
    no duplicate ``structuredContent`` in results);
 3. wraps the function so its return value is rendered by
-   :mod:`cmsmcp.output` (compact text, budgeted), audited, and noted for taint;
+   :mod:`cmsmcp.output` (compact text, budgeted) and audited;
 4. cuts results longer than the first pass (``CMSMCP_MAX_RESULT_CHARS``) to a
    skim (head + outline) and keeps the full text in memory, so the agent
    decides per document whether to search, jump or read on with
@@ -39,7 +39,7 @@ from cmsmcp import paging
 from cmsmcp.config.settings import Settings
 from cmsmcp.contracts.results import ToolEnvelope, WithImages
 from cmsmcp.output import budget, cut_point, render_envelope
-from cmsmcp.policy import ACT_EFFECTS, READ_EFFECTS, Effect, Policy
+from cmsmcp.policy import READ_EFFECTS, Effect, Policy
 from cmsmcp.routing import GROUP_GUIDE
 from cmsmcp.tools.common import failure
 
@@ -186,11 +186,6 @@ class CmsMcpServer(MCPServer):
     def group_enabled(self, group: str) -> bool:
         return group == CORE_GROUP or self._groups is None or group in self._groups
 
-    def _admits(self, group: str, effect: Effect) -> bool:
-        if effect in ACT_EFFECTS and not self.cmsmcp_settings.actions_enabled:
-            return False
-        return self.group_enabled(group)
-
     # ---------------------------------------------------------------- wrapping
     def _wrap(self, fn: Callable[..., Any], name: str, group: str, effect: Effect) -> Callable:
         settings = self.cmsmcp_settings
@@ -211,8 +206,6 @@ class CmsMcpServer(MCPServer):
             if isinstance(result, WithImages):
                 result, images = result.result, result.images
             ok = not (isinstance(result, ToolEnvelope) and result.status == "error")
-            if ok and effect in READ_EFFECTS and label:
-                policy.note_read(group)
             text = render_envelope(
                 result,
                 output_format=settings.output_format,
@@ -343,14 +336,15 @@ class CmsMcpServer(MCPServer):
         def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
             tool_name = name or fn.__name__
             tool_group = group or group_of(tool_name)
-            if not self._admits(tool_group, effect):
+            if effect not in READ_EFFECTS:
+                # cmsmcp is a read-only data-retrieval server: no tool may write.
+                raise ValueError(f"{tool_name}: cmsmcp registers read-only tools only")
+            if not self.group_enabled(tool_group):
                 return fn
-            # Act tools are never hidden: they stay listed with their destructive
-            # annotation, so cmsmcp_call (a read-annotated tool) cannot reach them.
-            hidden = self._lazy and effect in READ_EFFECTS and tool_group != CORE_GROUP
+            hidden = self._lazy and tool_group != CORE_GROUP
             ann = annotations or ToolAnnotations(
-                read_only_hint=effect in READ_EFFECTS,
-                destructive_hint=effect == Effect.ACT_EXTERNAL,
+                read_only_hint=True,
+                destructive_hint=False,
                 open_world_hint=True,
             )
             target = self._backstage if hidden and self._backstage is not None else self
@@ -403,8 +397,7 @@ class CmsMcpServer(MCPServer):
             name="cmsmcp_call",
             description=(
                 "Run one cmsmcp tool by exact name with its arguments object (see "
-                "cmsmcp_describe_tool). Same policy, confirmation and output rules as a "
-                "direct call."
+                "cmsmcp_describe_tool). Same policy and output rules as a direct call."
             ),
         )
         async def cmsmcp_call(

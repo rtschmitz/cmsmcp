@@ -1,4 +1,4 @@
-"""Policy engine: confirmation flows, approvals, personal opt-in, audit."""
+"""Policy engine: read-only effects, personal opt-in, audit."""
 
 from __future__ import annotations
 
@@ -9,103 +9,11 @@ from typing import Any
 import pytest
 
 from cmsmcp.config.settings import Settings
-from cmsmcp.policy import (
-    ActionDeclinedError,
-    ApprovedAction,
-    ConfirmationRequiredError,
-    Effect,
-    PersonalSourceDisabledError,
-    Policy,
-)
+from cmsmcp.policy import Effect, PersonalSourceDisabledError, Policy
 
 
-class _Accepted:
-    action = "accept"
-
-    def __init__(self, approve: bool) -> None:
-        self.data = type("D", (), {"approve": approve})()
-
-
-class _Ctx:
-    def __init__(self, result: Any = None, *, fail: bool = False) -> None:
-        self.result = result
-        self.fail = fail
-        self.messages: list[str] = []
-
-    async def elicit(self, message: str, schema: type) -> Any:  # noqa: ARG002
-        self.messages.append(message)
-        if self.fail:
-            raise RuntimeError("client does not support elicitation")
-        return self.result
-
-
-def _policy(tmp_path: Path, **kw: Any) -> Policy:
-    return Policy(Settings(state_dir=tmp_path, actions_enabled=True, **kw))
-
-
-CALL = {
-    "tool": "mattermost_post",
-    "summary": "post to town-square",
-    "details": {"channel": "town-square", "message": "hi"},
-    "hosts": ("mattermost.web.cern.ch",),
-}
-
-
-async def test_actions_disabled_refuses(tmp_path: Path) -> None:
-    policy = Policy(Settings(state_dir=tmp_path))
-    with pytest.raises(ActionDeclinedError):
-        await policy.confirm(_Ctx(_Accepted(True)), **CALL)
-
-
-async def test_elicitation_accept_returns_scoped_approval(tmp_path: Path) -> None:
-    policy = _policy(tmp_path)
-    policy.note_read("twiki")
-    ctx = _Ctx(_Accepted(True))
-    approval = await policy.confirm(ctx, **CALL)
-    assert isinstance(approval, ApprovedAction)
-    assert approval.allows_host("mattermost.web.cern.ch")
-    assert not approval.allows_host("evil.example.org")
-    # The prompt shows the exact payload and the session's provenance.
-    assert '"message": "hi"' in ctx.messages[0]
-    assert "twiki" in ctx.messages[0]
-
-
-async def test_elicitation_decline_refuses(tmp_path: Path) -> None:
-    with pytest.raises(ActionDeclinedError):
-        await _policy(tmp_path).confirm(_Ctx(_Accepted(False)), **CALL)
-    declined = type("R", (), {"action": "decline", "data": None})()
-    with pytest.raises(ActionDeclinedError):
-        await _policy(tmp_path).confirm(_Ctx(declined), **CALL)
-
-
-async def test_no_elicitation_parks_action_for_out_of_band_approval(tmp_path: Path) -> None:
-    policy = _policy(tmp_path)
-    with pytest.raises(ConfirmationRequiredError) as parked:
-        await policy.confirm(_Ctx(fail=True), **CALL)
-    key = next(iter(policy.pending.load()))
-    assert key in parked.value.message
-    # Not yet approved: the retry is refused.
-    with pytest.raises(ActionDeclinedError):
-        await policy.confirm(None, approval_id=key, **CALL)
-    policy.pending.set_approved(key, True)
-    # Different parameters cannot ride on the approval.
-    other = {**CALL, "details": {"channel": "town-square", "message": "something else"}}
-    with pytest.raises(ActionDeclinedError):
-        await policy.confirm(None, approval_id=key, **other)
-    approval = await policy.confirm(None, approval_id=key, **CALL)
-    assert approval.tool == "mattermost_post"
-    # Single use.
-    with pytest.raises(ActionDeclinedError):
-        await policy.confirm(None, approval_id=key, **CALL)
-
-
-async def test_approve_mode_never_elicits_and_deny_mode_refuses(tmp_path: Path) -> None:
-    ctx = _Ctx(_Accepted(True))
-    with pytest.raises(ConfirmationRequiredError):
-        await _policy(tmp_path, confirm_mode="approve").confirm(ctx, **CALL)
-    assert ctx.messages == []
-    with pytest.raises(ActionDeclinedError):
-        await _policy(tmp_path / "d", confirm_mode="deny").confirm(ctx, **CALL)
+def test_only_read_effects_exist() -> None:
+    assert {str(effect) for effect in Effect} == {"read", "read-personal"}
 
 
 def test_personal_sources_opt_in(tmp_path: Path) -> None:
@@ -158,33 +66,6 @@ async def test_mattermost_dm_reads_need_personal_opt_in(
     )
     allowed = json.loads((await opened.call_tool("mattermost_get_posts", args)).content[0].text)
     assert allowed["status"] == "ok"
-
-
-async def test_forged_queue_entries_are_never_honoured(tmp_path: Path) -> None:
-    policy = _policy(tmp_path)
-    digest = __import__("cmsmcp.policy", fromlist=["action_digest"]).action_digest(
-        CALL["tool"], CALL["details"]
-    )
-    # Written into the queue file by someone other than this server process.
-    forged = policy.pending.add(CALL["tool"], "x", CALL["details"], digest)
-    policy.pending.set_approved(forged, True)
-    with pytest.raises(ActionDeclinedError):
-        await policy.confirm(None, approval_id=forged, **CALL)
-
-
-async def test_confirmation_text_cannot_hide_characters(tmp_path: Path) -> None:
-    ctx = _Ctx(_Accepted(True))
-    await _policy(tmp_path).confirm(
-        ctx,
-        **{
-            **CALL,
-            "summary": "post \x1b[2Jhidden",
-            "details": {"message": "rm -rf \u202e~ \u200b"},
-        },
-    )
-    text = ctx.messages[0]
-    assert "\x1b" not in text and "\u202e" not in text and "\u200b" not in text
-    assert "\\u202e" in text
 
 
 def test_audit_redacts_url_secrets(tmp_path: Path) -> None:

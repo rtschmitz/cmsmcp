@@ -228,5 +228,4 @@ async def overview(
             out[name] = f"unavailable ({_why(result)})"
         else:
             out[name] = result
-            policy.note_read(name)
     return out

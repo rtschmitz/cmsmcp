@@ -9,7 +9,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -24,10 +24,14 @@ from cmsmcp.contracts.errors import (
     UpstreamError,
     setup_hint,
 )
-from cmsmcp.net.safety import redact_url, validate_headers, validate_method, validate_url
-
-if TYPE_CHECKING:
-    from cmsmcp.policy import ApprovedAction
+from cmsmcp.net.safety import (
+    check_read_only_post,
+    check_read_only_url,
+    redact_url,
+    validate_headers,
+    validate_method,
+    validate_url,
+)
 
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _CHUNK_SIZE = 64 * 1024
@@ -203,6 +207,8 @@ class SafeHttpClient:
         self,
         response: httpx.Response,
         redirects_seen: int,
+        *,
+        strict: bool = False,
     ) -> str | None:
         if response.status_code not in _REDIRECT_STATUSES or "location" not in response.headers:
             return None
@@ -212,7 +218,8 @@ class SafeHttpClient:
                 instructions="Check whether the endpoint requires an adapter-specific flow.",
             )
         target = urljoin(str(response.url), response.headers["location"])
-        return validate_url(target, allowed_hosts=self.settings.allowed_hosts)
+        target = validate_url(target, allowed_hosts=self.settings.allowed_hosts)
+        return check_read_only_url(target, strict=strict)
 
     async def _read_content(self, response: httpx.Response, *, method: str) -> bytes:
         content_length = response.headers.get("content-length")
@@ -326,6 +333,7 @@ class SafeHttpClient:
         safe_method = validate_method(method)
         safe_headers = validate_headers(headers)
         target = validate_url(url, allowed_hosts=self.settings.allowed_hosts)
+        check_read_only_url(target)
         origin_host = urlsplit(target).hostname
 
         for redirects_seen in range(self.settings.max_redirects + 1):
@@ -423,13 +431,19 @@ class SafeHttpClient:
         authenticated: bool,
         service_headers: dict[str, str] | None = None,
     ) -> SafeResponse:
-        """Shared POST core behind the explicit read-only allowlist gates."""
+        """Shared POST core: registered read-only query endpoints only.
+
+        The URL must match :data:`~cmsmcp.net.safety.READ_ONLY_POST_PATHS` and
+        the call site's host allowlist. A redirect is followed as a body-less
+        GET (what browsers do after a 302/303), never re-posted.
+        """
         target = validate_url(url, allowed_hosts=self.settings.allowed_hosts)
         host = urlsplit(target).hostname
         if host is None or not any(
             host == allowed or host.endswith(f".{allowed}") for allowed in allowlist
         ):
             raise PolicyViolationError(f"POST is restricted to {list(allowlist)}, got {host}")
+        check_read_only_post(target)
         for redirects_seen in range(self.settings.max_redirects + 1):
             request_headers: dict[str, str] = dict(validate_headers(headers))
             if service_headers and _same_host(target, host):
@@ -438,7 +452,7 @@ class SafeHttpClient:
                 request_headers["Cookie"] = cookie
             try:
                 async with self._client.stream(
-                    "POST",
+                    "POST" if redirects_seen == 0 else "GET",
                     target,
                     data=form if redirects_seen == 0 else None,
                     json=json_body if redirects_seen == 0 else None,
@@ -487,61 +501,6 @@ class SafeHttpClient:
             headers=headers,
             authenticated=authenticated,
         )
-
-    async def request_action(
-        self,
-        approval: ApprovedAction,
-        method: str,
-        url: str,
-        *,
-        json_body: Mapping[str, Any],
-        headers: dict[str, str] | None = None,
-        authenticated: bool = True,
-        service_headers: dict[str, str] | None = None,
-    ) -> SafeResponse:
-        """Send one user-confirmed write (POST/PUT) to a host the approval covers.
-
-        The only state-changing path in the client. It requires an
-        :class:`~cmsmcp.policy.ApprovedAction` (minted only by the policy engine
-        after the user confirmed this exact action), allows only POST/PUT with a
-        JSON body, never follows redirects (a redirected write is reported, not
-        replayed), and keeps every GET-path guarantee: host allowlist, HTTPS,
-        cookie scoping, size limits.
-        """
-        from cmsmcp.policy import ApprovedAction as _Approved  # noqa: PLC0415 - avoid cycle
-
-        if not isinstance(approval, _Approved):
-            raise PolicyViolationError("writes require a user-confirmed action")
-        verb = method.upper()
-        if verb not in {"POST", "PUT"}:
-            raise PolicyViolationError(f"{verb} is not an allowed action method")
-        target = validate_url(url, allowed_hosts=self.settings.allowed_hosts)
-        host = urlsplit(target).hostname or ""
-        if not approval.allows_host(host):
-            raise PolicyViolationError(f"the confirmed action does not cover {host}")
-        request_headers: dict[str, str] = dict(validate_headers(headers))
-        if service_headers:
-            request_headers.update(service_headers)
-        if cookie := await self._cookie_for(target, authenticated=authenticated):
-            request_headers["Cookie"] = cookie
-        try:
-            async with self._client.stream(
-                verb,
-                target,
-                json=dict(json_body),
-                headers=request_headers or None,
-                timeout=self.settings.request_timeout_seconds,
-                follow_redirects=False,
-            ) as response:
-                content = await self._read_content(response, method="POST")
-                return SafeResponse(
-                    status_code=response.status_code,
-                    url=redact_url(str(response.url)),
-                    headers=self._safe_headers(response),
-                    content=content,
-                )
-        except httpx.HTTPError as exc:
-            raise _transport_error("Action", target, exc) from exc
 
     async def request_json_post(
         self,
@@ -611,6 +570,7 @@ class SafeHttpClient:
         validate_method("GET")
         self.settings.ensure_directories()
         target = validate_url(url, allowed_hosts=self.settings.allowed_hosts)
+        check_read_only_url(target, strict=True)
         final = self._managed_download_path(destination)
         temporary = final.with_name(f".{final.name}.{time.time_ns()}.part")
         if self.auth_service is None and authenticated:
@@ -632,7 +592,7 @@ class SafeHttpClient:
                         timeout=self.settings.request_timeout_seconds,
                         follow_redirects=False,
                     ) as response:
-                        redirected = self._next_redirect(response, redirects_seen)
+                        redirected = self._next_redirect(response, redirects_seen, strict=True)
                         if redirected is not None:
                             target = redirected
                             continue

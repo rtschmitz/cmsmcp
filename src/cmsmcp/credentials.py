@@ -6,7 +6,7 @@ One place answers "what can this installation reach right now?":
 - ``kerberos``: a ``kinit`` ticket (lxplus, EOS, silent SSO renewal).
 - ``lxplus``: password-less SSH to lxplus over the Kerberos ticket.
 - ``grid``: X.509 user certificate / VOMS proxy (DAS, DQM, Rucio).
-- personal tokens: GitLab, Indico, GitHub; Jira only for confirmed comments.
+- personal read tokens: GitLab, Indico, GitHub.
 
 Checks never print or return secret values. ``quick`` checks are local (file
 presence, ``klist``); ``live`` checks contact the service (``cmsmcp doctor``).
@@ -57,8 +57,8 @@ TOKENS: tuple[TokenSpec, ...] = (
         "CERN GitLab",
         "private/internal repos, code search, issues, merge requests, pipelines",
         "https://gitlab.cern.ch/-/user_settings/personal_access_tokens",
-        "Add new token, name it cmsmcp, set an expiry. Scope read_api for reading; "
-        "add api only if you enable actions (comments, issues). It starts with glpat-.",
+        "Add new token, name it cmsmcp, set an expiry, scope read_api only (cmsmcp "
+        "never writes). It starts with glpat-.",
         prefix="glpat-",
     ),
     TokenSpec(
@@ -70,14 +70,6 @@ TOKENS: tuple[TokenSpec, ...] = (
         "Create new token, name it cmsmcp, tick read:everything and read:legacy_api only. "
         "It starts with indp_.",
         prefix="indp_",
-    ),
-    TokenSpec(
-        "jira",
-        "jira_token",
-        "CERN Jira",
-        "Jira comments (opt-in actions); reads already work through the SSO session",
-        "https://its.cern.ch/jira/secure/ViewProfile.jspa?selectedTab=com.atlassian.pats.pats-plugin:jira-user-personal-access-tokens",
-        "Profile -> Personal Access Tokens -> Create token, name it cmsmcp, set an expiry.",
     ),
     TokenSpec(
         "github",
@@ -173,9 +165,7 @@ def check_token(settings: Settings, spec: TokenSpec) -> Check:
 
 def check_actions(settings: Settings) -> Check:
     personal = ", ".join(settings.personal_sources) or "none"
-    if settings.actions_enabled:
-        return Check(OK, f"enabled, confirm={settings.confirm_mode}; personal: {personal}")
-    return Check(OK, f"disabled (read-only); personal: {personal}")
+    return Check(OK, f"read-only; personal: {personal}")
 
 
 # ----------------------------------------------------------------- live checks

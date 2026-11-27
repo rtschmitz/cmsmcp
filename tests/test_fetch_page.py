@@ -99,6 +99,17 @@ class _FakeContext:
         self._page = page
         self._state = state
         self.request = _FakeRequest(probe_response)
+        self.options: dict[str, Any] = {}
+        self.route_handler: Any = None
+        self.socket_handler: Any = None
+
+    async def route(self, pattern: str, handler: Any) -> None:
+        assert pattern == "**/*"
+        self.route_handler = handler
+
+    async def route_web_socket(self, pattern: str, handler: Any) -> None:
+        assert pattern == "**/*"
+        self.socket_handler = handler
 
     async def new_page(self) -> _FakePage:
         return self._page
@@ -114,7 +125,8 @@ class _FakeBrowser:
     def __init__(self, context: _FakeContext) -> None:
         self._context = context
 
-    async def new_context(self, **_: Any) -> _FakeContext:
+    async def new_context(self, **options: Any) -> _FakeContext:
+        self._context.options = options
         return self._context
 
     async def close(self) -> None:
@@ -126,8 +138,9 @@ def _patch_playwright(
     page: _FakePage,
     state: dict[str, Any],
     probe_response: _FakeAPIResponse | None = None,
-) -> None:
-    fake_browser = _FakeBrowser(_FakeContext(page, state, probe_response))
+) -> _FakeContext:
+    fake_context = _FakeContext(page, state, probe_response)
+    fake_browser = _FakeBrowser(fake_context)
 
     class _PlaywrightCM:
         async def __aenter__(self) -> None:
@@ -142,6 +155,56 @@ def _patch_playwright(
         return fake_browser
 
     monkeypatch.setattr(browser_module, "_launch_browser", _launch)
+    return fake_context
+
+
+class _FakeRouteRequest:
+    def __init__(self, method: str, url: str, body: str | None, *, navigation: bool) -> None:
+        self.method = method
+        self.url = url
+        self.post_data = body
+        self._navigation = navigation
+
+    def is_navigation_request(self) -> bool:
+        return self._navigation
+
+
+class _FakeRoute:
+    def __init__(self, request: _FakeRouteRequest) -> None:
+        self.request = request
+        self.outcome: str | None = None
+
+    async def continue_(self) -> None:
+        self.outcome = "continued"
+
+    async def abort(self, _code: str) -> None:
+        self.outcome = "aborted"
+
+
+async def test_fetch_page_text_browser_is_read_only(monkeypatch, tmp_path: Path) -> None:
+    context = _patch_playwright(monkeypatch, _FakePage(["Hello", "Hello"]), {"cookies": []})
+    await fetch_page_text(
+        _settings(tmp_path), {"cookies": [], "origins": []}, "https://app.cern.ch/page", None, 30
+    )
+    # Service workers would bypass the route; they must be blocked.
+    assert context.options["service_workers"] == "block"
+    assert context.route_handler is not None and context.socket_handler is not None
+
+    async def outcome(method: str, url: str, body: str | None = None, *, nav: bool = False) -> str:
+        route = _FakeRoute(_FakeRouteRequest(method, url, body, navigation=nav))
+        await context.route_handler(route)
+        return str(route.outcome)
+
+    assert await outcome("GET", "https://app.cern.ch/api/items") == "continued"
+    assert await outcome("POST", "https://app.cern.ch/api/items", '{"a":1}') == "aborted"
+    assert await outcome("DELETE", "https://app.cern.ch/api/items/1") == "aborted"
+    assert await outcome("POST", "https://app.cern.ch/form", "title=x", nav=True) == "aborted"
+    assert await outcome("GET", "https://app.cern.ch/api/items/1/delete") == "aborted"
+    token = "https://auth.cern.ch/auth/realms/cern/protocol/openid-connect/token"
+    assert await outcome("POST", token, "grant_type=authorization_code&code=x") == "continued"
+    saml = "SAMLResponse=abc&RelayState=xyz"
+    assert await outcome("POST", "https://app.cern.ch/saml/acs", saml, nav=True) == "continued"
+    assert await outcome("POST", "https://app.cern.ch/saml/acs", saml) == "aborted"
 
 
 async def test_fetch_page_text_waits_for_marker(monkeypatch, tmp_path: Path) -> None:

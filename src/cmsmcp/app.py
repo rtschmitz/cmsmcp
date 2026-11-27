@@ -33,7 +33,7 @@ from cmsmcp.contracts.results import (
     ToolEnvelope,
 )
 from cmsmcp.net.client import SafeHttpClient
-from cmsmcp.net.safety import validate_url
+from cmsmcp.net.safety import check_read_only_url, validate_url
 from cmsmcp.policy import PersonalSourceDisabledError, Policy
 from cmsmcp.registry import CmsMcpServer, enabled_groups
 from cmsmcp.tools import register_adapter_tools
@@ -77,6 +77,7 @@ async def _cern_fetch_page_payload(
     """Handler for the cern_fetch_page tool (kept out of build_server)."""
     try:
         validate_url(url, allowed_hosts=settings.allowed_hosts)
+        check_read_only_url(url, strict=True)
         _refuse_personal_hosts(url, policy)
         await auth.ensure_authenticated()
         payload = await auth.fetch_page(
@@ -148,7 +149,7 @@ def build_server(  # noqa: C901 - per-tool registration blocks dominate the bran
         policy=policy,
         name=runtime_settings.server_name,
         title="cmsmcp",
-        description="CERN/CMS services for the signed-in user (read; confirmed actions).",
+        description="CERN/CMS services for the signed-in user (read-only).",
         instructions=routing.instructions(enabled_groups(runtime_settings.profiles)),
         version=runtime_settings.server_version or __version__,
     )
@@ -247,7 +248,8 @@ def build_server(  # noqa: C901 - per-tool registration blocks dominate the bran
             "substring of the expected content — to wait until SPA data appears; "
             "without it the page is read once its text stabilizes. auth_divert=true "
             "means the page landed on the SSO login: the stored session is stale, "
-            "re-run cern_auth_sign_in."
+            "re-run cern_auth_sign_in. Read-only: the page cannot submit forms or send "
+            "POST/PUT/DELETE requests, so content a page loads by POST stays missing."
         ),
     )
     async def cern_fetch_page(

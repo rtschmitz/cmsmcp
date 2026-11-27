@@ -13,6 +13,8 @@ from playwright.async_api import (
     BrowserContext,
     Page,
     Playwright,
+    Route,
+    WebSocketRoute,
     async_playwright,
 )
 from playwright.async_api import Error as PlaywrightError
@@ -21,6 +23,7 @@ from cmsmcp.auth.store import SessionRecord
 from cmsmcp.auth.tokens import BEARER_SERVICES
 from cmsmcp.config.settings import Settings
 from cmsmcp.contracts.errors import AuthCancelledError, AuthTimeoutError, BrowserUnavailableError
+from cmsmcp.net.safety import browser_request_allowed, redact_url
 
 logger = logging.getLogger(__name__)
 
@@ -650,6 +653,45 @@ _FETCH_STABLE_POLLS = 2
 _AUTHFLOW_HOST = "authflow.cern.ch"
 
 
+async def _install_read_only_guard(context: BrowserContext, settings: Settings) -> None:
+    """Make an agent-directed page render read-only.
+
+    The page runs its own JavaScript with the user's session, so the HTTP
+    layer's GET-only rule does not reach it. Every request the page makes is
+    checked with :func:`~cmsmcp.net.safety.browser_request_allowed`: reads
+    pass, the SSO sign-in plumbing passes, and everything that could write
+    (form submits, XHR POST/PUT/PATCH/DELETE, known state-changing GET URLs)
+    is aborted. WebSockets are closed, since their messages cannot be
+    inspected as requests. The context must be created with
+    ``service_workers="block"`` so no request escapes the route.
+    """
+    identity_hosts = (settings.sso_identity_host, _AUTHFLOW_HOST)
+
+    async def guard(route: Route) -> None:
+        request = route.request
+        try:
+            post_data = request.post_data
+        except (PlaywrightError, UnicodeDecodeError):  # binary body: never a sign-in form
+            post_data = None
+        if browser_request_allowed(
+            request.method,
+            request.url,
+            post_data=post_data,
+            navigation=request.is_navigation_request(),
+            identity_hosts=identity_hosts,
+        ):
+            await route.continue_()
+            return
+        logger.debug("Read-only browser blocked %s %s", request.method, redact_url(request.url))
+        await route.abort("blockedbyclient")
+
+    async def close_socket(socket: WebSocketRoute) -> None:
+        await socket.close()
+
+    await context.route("**/*", guard)
+    await context.route_web_socket("**/*", close_socket)
+
+
 async def _poll_body_text(
     page: Page,
     *,
@@ -768,7 +810,10 @@ async def fetch_page_text(
     try:
         async with async_playwright() as playwright:
             browser = await _launch_browser(settings, playwright, headless=True)
-            context = await browser.new_context(storage_state=storage_state, accept_downloads=False)
+            context = await browser.new_context(
+                storage_state=storage_state, accept_downloads=False, service_workers="block"
+            )
+            await _install_read_only_guard(context, settings)
             page = await context.new_page()
             try:
                 await page.goto(

@@ -84,7 +84,6 @@ async def test_unified_search_merges_sources_and_isolates_failures(
     assert sum(t.startswith("[mattermost]") for t in titles) == 3
     assert stubs["dms"] == [False, False]
     assert stubs["indico"] == ("tracker", 3)
-    assert {"indico", "docs", "mattermost"} <= policy.read_sources
 
 
 async def test_unified_search_includes_dms_only_with_opt_in(

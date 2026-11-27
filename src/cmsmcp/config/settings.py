@@ -197,12 +197,6 @@ class Settings(BaseSettings):
     # --- Policy -----------------------------------------------------------
     # Personal content sources the user opted into, e.g. ["mattermost_dm"].
     personal_sources: Annotated[tuple[str, ...], NoDecode] = ()
-    # Write/act tools are only registered when this is true.
-    actions_enabled: bool = False
-    # elicit: confirm through the MCP client (falls back to approve when the
-    # client cannot elicit); approve: always out-of-band `cmsmcp approve`;
-    # deny: refuse every action.
-    confirm_mode: Literal["elicit", "approve", "deny"] = "elicit"
     audit_enabled: bool = True
 
     # --- lxplus / Kerberos -------------------------------------------------

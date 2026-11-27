@@ -3,7 +3,7 @@
 cmsmcp is one Model Context Protocol server that gives an AI agent access to the CERN and CMS services **you** can reach, as you: Indico, TWiki/CMS docs, GLANCE (CADI), CMS Talk, Mattermost, GitLab, GitHub (cms-sw), Jira, CDS, INSPIRE, DocDB, OMS/E-Log, Run Registry, DQM, HLT, DAS, McM, XSDB, Rucio, ServiceNow, EDMS, the Phonebook, and your lxplus files and HTCondor/CRAB jobs (~180 tools).
 
 - **Your access, your credentials.** CERN SSO (browser or Kerberos + 2FA) plus optional personal tokens (GitLab, Indico, GitHub; Mattermost and Jira work from the SSO session), a Kerberos ticket for lxplus, and a grid proxy for DAS/DQM/Rucio. Secrets stay in owner-only files; the model never sees them.
-- **Read by default, act only with your confirmation.** Write tools (post to Mattermost, comment on GitLab/Jira, submit/remove HTCondor jobs, CRAB resubmit, a shell command on lxplus) exist only when you enable actions, and every single call asks you to confirm the exact payload (see the limits below).
+- **Read-only.** cmsmcp retrieves data; no tool changes anything on a remote service (no posting, commenting, voting, job submission or remote shell commands). See [Read-only guarantee](#read-only-guarantee). Earlier confirmed write tools are kept for reference on the `write-actions` branch.
 - **Token-efficient.** Results are compact text (not pretty-printed JSON twice), no output schemas, per-result budgets, tool profiles, an optional lazy mode, `cern_search` (many sources in one call) and `mine_overview` (your queues in one call).
 
 ## Quick start
@@ -21,8 +21,8 @@ Setup has three tiers, and nothing optional is asked up front. A tool that needs
 | --- | --- |
 | `cmsmcp setup` | CERN SSO (+ checks for the browser / Kerberos dependencies) |
 | `cmsmcp setup --tokens` | + long-lived personal read tokens: GitLab, Indico, GitHub |
-| `cmsmcp setup --all` | + Kerberos, lxplus, grid proxy, Rucio account, personal-data and actions policy, Jira token (only Jira comments need it) |
-| `cmsmcp setup <step>` | one step: `sso kerberos lxplus grid gitlab indico github rucio policy jira` |
+| `cmsmcp setup --all` | + Kerberos, lxplus, grid proxy, Rucio account, personal-data policy |
+| `cmsmcp setup <step>` | one step: `sso kerberos lxplus grid gitlab indico github rucio policy` |
 
 Other commands:
 
@@ -32,7 +32,6 @@ Other commands:
 | `cmsmcp login [--otp CODE] [--device NAME] [--force]` | CERN SSO from the terminal with your Kerberos ticket + 2FA code |
 | `cmsmcp connect` | open the lxplus connection once (Kerberos + 2FA); tools reuse it for 12 h |
 | `cmsmcp status` / `cmsmcp doctor` | what is configured / live test of every connection and token scope |
-| `cmsmcp approve [ID] [--deny]` | review actions an agent parked for your approval |
 | `cmsmcp audit [-n N]` | local log of tool calls (owner-only file) |
 | `cmsmcp logout NAME… / --all [--purge]` | remove stored credentials (and logs/caches/downloads) |
 
@@ -52,12 +51,9 @@ Secrets live in `~/.config/cmsmcp/secrets/<field>` (mode 0600, ignored if readab
 
   One call returns at most `CMSMCP_MAX_READ_CHARS` (50k chars), which keeps even dense text (URLs, JSON, hashes) under Claude Code's 25k-token tool-output cap (`MAX_MCP_OUTPUT_TOKENS`); raise it only if your client allows more. Longer documents just take more calls. A single document's body is never clipped; in text output each item of a *list* (search hit, post, comment) is clipped at 4k chars — open the item's detail tool for its full text. HTML headings become `#` lines and `<pre>` code keeps its indentation (four-space code block).
 
-## Personal data and actions
+## Personal data
 
 - Personal content needs your opt-in (`cmsmcp setup policy` or `CMSMCP_PERSONAL_SOURCES=mattermost_dm`): without it Mattermost direct/group messages and their attachments are hidden from search, channel history, threads and downloads (fail-closed: unknown channels count as private), and the generic `cern_fetch_page` / `cern_download_file` refuse Mattermost URLs.
-- Actions need `CMSMCP_ACTIONS_ENABLED=true`. Each call is confirmed by you: through the MCP client's elicitation prompt (shows the exact payload and which sources the session has read), or, with `CMSMCP_CONFIRM_MODE=approve` or clients without elicitation, out of band with `cmsmcp approve <id>`, after which the agent retries with `approval_id`. Approvals are single-use, bound to the exact parameters, and expire after 15 minutes. `CMSMCP_CONFIRM_MODE=deny` refuses all actions.
-- By convention the only write paths (the HTTP client's `request_action`, the lxplus action runners) take the host-scoped `ApprovedAction` that the confirmation returns. lxplus never reads credential files or `~/private` (all tools), runs CRAB/SCRAM/submit files only from your own AFS/EOS areas, and shows a submit file's hash and first lines for confirmation (re-checked before submitting). GitLab comments/issues containing quick-action lines (`/merge`, `/approve`, …) are refused. The free-form `lxplus_run` filter for credential-touching commands is best-effort; your confirmation is the real control.
-- **Limits of confirmation.** Elicitation trusts your MCP client to show the prompt to *you*; agent-SDK or headless hosts may answer it automatically, so use `CMSMCP_CONFIRM_MODE=approve` (or `deny`) there. `cmsmcp approve` refuses piped input and the server honours only approval ids it issued, but an agent with unrestricted shell access as you can still drive any same-user channel: do not give such an agent unattended shell access together with actions.
 - Retrieved content is labelled as untrusted data. cmsmcp sends content to whichever model your client uses; check CERN/CMS rules before pointing a commercial model at internal material.
 
 ### Run without a developer checkout (`uvx`)
@@ -168,7 +164,7 @@ It installs `cmsmcp`, prints the command to register with your MCP client, and o
 - `cern_auth_status` — reports whether a usable session is stored, its expiry when known, and safe metadata such as the credential filename. Call this first when troubleshooting authentication.
 - `cern_auth_reauthenticate` — discards the stored session cookies and captured service Bearer tokens, then runs a fresh visible-browser sign-in. Use when `cern_auth_sign_in` keeps reusing a broken session.
 - `cern_health` — protected smoke tool proving the authentication guard, read-only safety policy, and server wiring after sign-in.
-- `cern_fetch_page` — renders one SSO-protected page in a headless browser through the stored session and returns its visible text. Covers cookie-based sites and Keycloak-PKCE single-page apps whose token exchange completes silently (plain GET-based tools cannot read either). `wait_for` waits for a case-insensitive substring before returning (use for SPA content); `auth_divert=true` in the result means the page landed on the SSO login and the stored session needs a fresh `cern_auth_sign_in`. URLs that serve binary files (PDFs, archives) are detected — Chromium aborts their navigation — and reported with a pointer to `cern_download_file` instead of a misleading stale-session hint.
+- `cern_fetch_page` — renders one SSO-protected page in a headless browser through the stored session and returns its visible text. Covers cookie-based sites and Keycloak-PKCE single-page apps whose token exchange completes silently (plain GET-based tools cannot read either). `wait_for` waits for a case-insensitive substring before returning (use for SPA content); `auth_divert=true` in the result means the page landed on the SSO login and the stored session needs a fresh `cern_auth_sign_in`. URLs that serve binary files (PDFs, archives) are detected — Chromium aborts their navigation — and reported with a pointer to `cern_download_file` instead of a misleading stale-session hint. The page renders read-only: only GET/HEAD/OPTIONS requests and the SSO sign-in exchanges (Keycloak token endpoint, SAML/OIDC sign-in responses) leave the browser; form submits, POST/PUT/PATCH/DELETE calls from the page's scripts, WebSockets and service workers are blocked, so content a page loads by POST stays missing.
 - `cern_download_file` — downloads one file hosted on an allowlisted CERN site into cmsmcp download storage through the stored SSO session (cookies re-scoped per redirect hop), returning the local path and size; use it for the binary URLs `cern_fetch_page` cannot render.
 
 ### Terminal sign-in with Kerberos (`cmsmcp login`)
@@ -564,8 +560,7 @@ directory.web.cern.ch is a Drupal portal whose search tabs delegate to CDS, Indi
 lxplus asks for a second factor after Kerberos, so cmsmcp never logs in unattended: `cmsmcp connect` opens an SSH control master once (kinit + 2FA code) and every tool reuses it for `CMSMCP_LXPLUS_PERSIST` (default 12h). Requires `CMSMCP_LXPLUS_USER` (`cmsmcp setup lxplus`). On lxplus itself they are not needed, and cmsmcp turns them off.
 
 - `lxplus_eos_ls`, `lxplus_read_file` (text, bounded), `lxplus_download_file` (into local storage), `lxplus_quota`, `lxplus_condor_queue`, `lxplus_condor_history`, `lxplus_crab_status` (in your CMSSW area).
-- Actions (confirmed): `lxplus_condor_submit` (own area; hash + first lines confirmed), `lxplus_condor_remove`, `lxplus_crab_resubmit` (own area), `lxplus_run` (one shell command; a best-effort filter refuses visibly credential-touching commands).
-- Paths are restricted to `/eos`, `/afs`, `/cvmfs` without traversal, never credential files or `~/private`; every remote argument is shell-quoted; CRAB and submit files run only from your own areas.
+- Paths are restricted to `/eos`, `/afs`, `/cvmfs` without traversal, never credential files or `~/private`; every remote argument is shell-quoted; `crab status` runs only from your own areas. There is no generic command, submit, remove or resubmit tool.
 
 ### Claude Code on a remote directory (`contrib/claude-remote`)
 
@@ -578,10 +573,6 @@ A standalone helper, separate from the server: `claude-remote HOST:/abs/path` ru
 ## Rucio tools (cms-rucio.cern.ch)
 
 - `rucio_list_rules` (your rules, by state / name), `rucio_get_rule`, `rucio_get_did` (dataset metadata + placing rules). X.509 login with the grid certificate/proxy on the auth host only; needs `cmsmcp setup grid` and `cmsmcp setup rucio`.
-
-## Action tools (only with actions enabled; each confirmed)
-
-- `mattermost_post` (message or thread reply; the confirmation names the channel and its type), `gitlab_comment` (issue or MR), `gitlab_create_issue` (GitLab token with `api` scope), `jira_comment` (Jira token), plus the lxplus actions above.
 
 ## Configuration
 
@@ -610,7 +601,7 @@ Configuration uses environment variables with the `CMSMCP_` prefix. Common setti
 | `CMSMCP_WEBSITES_TOKEN` | unset | Optional Web Services portal Bearer token (normally minted headlessly from SSO) |
 | `CMSMCP_WEBSITES_CACHE_MAX_AGE_DAYS` | `30` | Inventory cache age after which searches auto-refresh |
 | `CMSMCP_MATTERMOST_BASE_URL` | `https://mattermost.web.cern.ch` | CERN Mattermost instance |
-| `CMSMCP_JIRA_TOKEN` / `CMSMCP_GITHUB_TOKEN` | unset | Optional Jira personal token (needed only for the opt-in `jira_comment` action; reads use the SSO session) / GitHub token |
+| `CMSMCP_JIRA_TOKEN` / `CMSMCP_GITHUB_TOKEN` | unset | Optional Jira personal token, sent as Bearer on Jira reads (normally unnecessary: Jira reads use the SSO session; a Jira token cannot be limited to reads) / GitHub token |
 | `CMSMCP_CONFIG_DIR` | `~/.config/cmsmcp` | Secret files (`secrets/`) and the setup config file (`cmsmcp.env`) |
 | `CMSMCP_OUTPUT_FORMAT` | `text` | `text` (compact) or `json` (one compact line) |
 | `CMSMCP_MAX_RESULT_CHARS` | `16000` | Skim (first pass) size of a long result |
@@ -618,8 +609,6 @@ Configuration uses environment variables with the `CMSMCP_` prefix. Common setti
 | `CMSMCP_PROFILES` | `all` | Tool groups/profiles to expose (`search docs meetings literature analysis code chat ops compute mine personal`, or group names) |
 | `CMSMCP_TOOL_MODE` | `direct` | `lazy` hides non-core tools behind find/describe/call |
 | `CMSMCP_PERSONAL_SOURCES` | empty | Opt-ins for personal content, e.g. `mattermost_dm` |
-| `CMSMCP_ACTIONS_ENABLED` | `false` | Register write tools |
-| `CMSMCP_CONFIRM_MODE` | `elicit` | `elicit`, `approve` (always `cmsmcp approve`), or `deny` |
 | `CMSMCP_AUDIT_ENABLED` | `true` | Local audit log of tool calls |
 | `CMSMCP_LXPLUS_USER` / `CMSMCP_LXPLUS_HOST` / `CMSMCP_LXPLUS_PERSIST` | unset / `lxplus.cern.ch` / `12h` | lxplus SSH target and connection lifetime |
 | `CMSMCP_OTP_DEVICE` | unset | Authenticator app `cmsmcp login` uses when several are registered (number or part of its name; `--device` overrides) |
@@ -631,10 +620,20 @@ Service tokens come only from these namespaced environment variables or the priv
 
 The session store and its state directory are written with owner-only permissions. It contains browser cookies and should be treated as a credential file. Logs and tool outputs expose only metadata and redacted URLs, never cookie or authorization values.
 
+## Read-only guarantee
+
+cmsmcp is a data-retrieval server: every tool call reads, none changes state on a remote service. This covers what cmsmcp's own tools can do; an agent may still change things through other tools it has (a shell, other MCP servers).
+
+- **Tools.** Only `read` / `read-personal` tools exist; the registry refuses to register anything else, and every tool carries MCP's `readOnlyHint`. There are no post, comment, issue, vote, job submit/remove/resubmit or generic-command tools (they are kept, unreleased, on the `write-actions` branch).
+- **HTTP.** The shared client sends `GET`/`HEAD`, plus `POST` only to a fixed, reviewed list of search endpoints that accept queries by POST alone (`READ_ONLY_POST_PATHS` in `net/safety.py`: ServiceNow portal search, Mattermost post search, Run Registry filtered lists and lumisection ranges, CMS Online E-Log search and shift-list date form), each also bound to its host. A redirected POST is followed as a body-less GET, never re-posted.
+- **GET that writes.** Some services change state on a plain GET. Every request and redirect hop is refused when it hits a known case: McM REST actions other than reads (`approve`, `reset`, `clone`, `delete`, …), TWiki scripts other than `view`/`viewauth`/`viewfile`/`rdiff`/`oops`, DocDB `Process*`/upload/delete scripts, logout endpoints and `_method` overrides. URLs the agent chooses (`cern_fetch_page`, every download) are additionally refused when a path segment or `action`/`cmd`-style parameter is an action verb (`delete`, `submit`, `approve`, `subscribe`, …).
+- **Headless browser.** `cern_fetch_page` runs the page's own scripts with your session, so its browser is read-only too: only reads and the SSO sign-in plumbing (Keycloak token endpoint, SAML/OIDC sign-in responses) leave it; other POSTs, PUT/PATCH/DELETE, the rules above, WebSockets and service workers are blocked. Browser sessions cmsmcp drives itself to sign in to services or to read fixed portal pages (cookie warm-up, Bearer-token capture, the CMS Online/E-Log portlet fallback, EDMS) are not agent-directed and keep their sign-in flows.
+- **lxplus.** Fixed read commands only (`eos ls`, `head`, `cat`, `condor_q`, `condor_history`, quota, `crab status`), arguments validated and shell-quoted. `crab status` may update CRAB's local cache and log files in your task directory.
+- **Session side effects.** Signing in, refreshing tokens and warming service cookies create or refresh *sessions* (and on a service you have never used, the first sign-in may create your user profile there), but change no content.
+
 ## Safety model
 
-- Reads are the default; every tool declares an effect class (`read`, `read-personal`, `act-own`, `act-external`) and the server, not the prompt, enforces it.
-- The shared HTTP layer accepts `GET`/`HEAD`, an explicit host-allowlisted set of read-only JSON/form POST *query* endpoints (ServiceNow portal search, CMS Online portlet forms, Mattermost post search), and one write path that requires a user-confirmed, host-scoped `ApprovedAction`; writes never follow redirects.
+- Read-only, see below; every tool declares an effect class (`read` or `read-personal`) and the server, not the prompt, enforces it.
 - Requests are constrained to configured host allowlists; authenticated cookies are injected only after RFC 6265 host/domain and path checks; personal tokens are sent only to the host they belong to and dropped on cross-host redirects.
 - Saved browser state is minimized to allowlisted cookies; localStorage origins are never persisted.
 - Redirects are bounded and re-checked; response and download sizes are bounded; downloads stay inside cmsmcp state storage (collisions resolved by SHA-256, nothing silently overwritten).

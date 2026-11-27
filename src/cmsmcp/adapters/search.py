@@ -288,7 +288,6 @@ async def unified_search(
             errors[name] = _error_line(outcome)
         else:
             items.extend(outcome)
-            policy.note_read(name)
     result: dict[str, Any] = {
         "source": "cern_search",
         "query": query,
