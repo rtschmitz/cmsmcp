@@ -108,6 +108,8 @@ Having installed on the systems tools for document manipulation like pandoc, sof
 
 **Linux is the only supported platform.** macOS and Windows are **unsupported**. They get best-effort accommodations (`src/cmsmcp/oscompat.py`, which returns the unchanged Linux behaviour on Linux), checked only by unit tests that simulate those platforms. Nobody has run cmsmcp on a real Mac or Windows machine, so expect rough edges.
 
+**CERN lxplus** (AFS home, no local browser) needs a few extra settings: see [docs/lxplus.md](docs/lxplus.md).
+
 | | Linux (supported) | macOS (unsupported) | Windows (unsupported) |
 | --- | --- | --- | --- |
 | Browser SSO, web/API tools | yes | expected to work | expected to work |
