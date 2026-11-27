@@ -153,66 +153,24 @@ cmsmcp setup
 
 ### CERN lxplus setup
 
-cmsmcp runs on lxplus (RHEL 9) without code changes; this setup puts everything under `~/private/cmsmcp` (about 0.6 GB of home quota). Checked on lxplus9 (RHEL 9.9), November 2026.
+From your clone on lxplus (RHEL 9):
 
 ```bash
-B=~/private/cmsmcp
-mkdir -p "$B" && cd "$B"
-git clone https://github.com/rtschmitz/cmsmcp app
-python3 -m pip install --user uv          # uv goes to ~/.local/bin
-export UV_PYTHON_INSTALL_DIR=$B/uv-python UV_LINK_MODE=copy UV_CACHE_DIR=/tmp/$USER/uv-cache
-cd app
+python3 -m pip install --user uv
+export UV_PYTHON_INSTALL_DIR=~/private/cmsmcp/uv-python UV_LINK_MODE=copy UV_CACHE_DIR=/tmp/$USER/uv-cache
 ~/.local/bin/uv sync --no-dev --extra kerberos --python 3.12 --python-preference only-managed
-PLAYWRIGHT_BROWSERS_PATH=$B/pw .venv/bin/playwright install --only-shell chromium
-mkdir -p -m 700 "$B/config" "$B/state"
+PLAYWRIGHT_BROWSERS_PATH=~/private/cmsmcp/pw .venv/bin/playwright install --only-shell chromium
+claude mcp add -s user cmsmcp -- "$PWD/contrib/lxplus/cmsmcp-lxplus"
+contrib/lxplus/cmsmcp-lxplus login
 ```
 
-Playwright warns that the OS is not officially supported and downloads its Ubuntu build of headless Chromium; that build works on lxplus.
-
-Then create the wrapper `~/private/cmsmcp/cmsmcp`. Use it for every `cmsmcp` command and as the MCP server command, so all of them see the same settings:
-
-```bash
-cat > ~/private/cmsmcp/cmsmcp <<'EOF'
-#!/bin/bash
-B=$HOME/private/cmsmcp
-export CMSMCP_CONFIG_DIR=$B/config        # secrets + cmsmcp.env
-export CMSMCP_STATE_DIR=$B/state          # SSO cookies, audit log, downloads
-export PLAYWRIGHT_BROWSERS_PATH=$B/pw     # headless Chromium
-unset CMSMCP_LXPLUS_USER                  # lxplus SSH tools: no Unix sockets on AFS
-export X509_USER_PROXY=$HOME/x509up_u$(id -u)   # grid proxy on AFS
-export CMSMCP_GRID_CERT_FILE=$X509_USER_PROXY
-export CMSMCP_GRID_KEY_FILE=$X509_USER_PROXY
-case ":$PATH:" in *:/cvmfs/cms.cern.ch/common:*) ;; *) PATH=$PATH:/cvmfs/cms.cern.ch/common ;; esac
-exec "$B/app/.venv/bin/cmsmcp" "$@"
-EOF
-chmod 700 ~/private/cmsmcp/cmsmcp
-```
-
-Register the wrapper as a stdio server. MCP client configs don't expand `~` or `$HOME`, so print the entry with your own path filled in and paste it into your client's config:
-
-```bash
-printf '{"mcpServers": {"cmsmcp": {"command": "%s"}}}\n' "$HOME/private/cmsmcp/cmsmcp"
-claude mcp add -s user cmsmcp -- "$HOME/private/cmsmcp/cmsmcp"    # Claude Code: registers it directly
-```
-
-Then sign in and check:
-
-```bash
-~/private/cmsmcp/cmsmcp login                                       # Kerberos ticket + 2FA code
-voms-proxy-init -voms cms -valid 192:00 -out ~/x509up_u$(id -u)     # optional: DAS, DQM, Rucio
-~/private/cmsmcp/cmsmcp setup gitlab                                # optional tokens, see Quick start
-~/private/cmsmcp/cmsmcp doctor
-```
-
-Why each setting:
-
-- **Python:** the system `python3.12` has no development headers, so `gssapi` (needed by `cmsmcp login`) does not build; uv's managed Python has them. `UV_CACHE_DIR` on local `/tmp` keeps the download cache off AFS, and `UV_LINK_MODE=copy` avoids hard links across filesystems.
-- **Secrets:** AFS ignores Unix mode bits for other users and protects files only through directory ACLs. `~/private` has no `system:anyuser` access, so the config (secrets) and state (SSO cookies) directories go there. The session then works on every lxplus node.
-- **Sign-in:** there is no local display, so use `cmsmcp login` ([Terminal sign-in with Kerberos](#terminal-sign-in-with-kerberos-cmsmcp-login)) instead of the browser sign-in; only Playwright's headless Chromium is needed. The session lasts up to `CMSMCP_SESSION_MAX_AGE_SECONDS` (24 h); run `login` again when tools answer `AUTH_REQUIRED`.
-- **lxplus tools:** they keep an SSH ControlMaster socket in the state directory, and AFS refuses Unix sockets (`Operation not permitted`). On lxplus itself they add nothing, so `CMSMCP_LXPLUS_USER` stays unset.
-- **Grid proxy:** the default `/tmp/x509up_u$(id -u)` exists only on the node where it was made; the copy in your AFS home works everywhere.
-- **`dasgoclient`:** lives in `/cvmfs/cms.cern.ch/common`, which may not be on the `PATH` an MCP client starts the server with.
-- **Updating:** `git -C ~/private/cmsmcp/app pull`, then rerun the `uv sync` line with the same three `UV_*` variables; rerun the `playwright install` line if Playwright asks for a newer browser.
+- **Wrapper:** `contrib/lxplus/cmsmcp-lxplus` runs the clone's cmsmcp with the settings below. Use it in place of `cmsmcp` for every command (`setup gitlab`, `doctor`, …) and as the MCP server command. Other MCP clients need its absolute path (`echo "$PWD/contrib/lxplus/cmsmcp-lxplus"`), since client configs don't expand `~` or `$HOME`.
+- **Python:** the system `python3.12` has no development headers, so `gssapi` (for `cmsmcp login`) does not build; uv's managed Python has them. The uv cache stays on local `/tmp`, and `UV_LINK_MODE=copy` avoids hard links across filesystems.
+- **Secrets:** AFS protects files through directory ACLs, not mode bits, and `~/private` has no access for other users. The wrapper keeps config (secrets) and state (SSO cookies) in `~/private/cmsmcp`, so the session works on every lxplus node.
+- **Sign-in:** there is no local display, so use `login` ([Terminal sign-in with Kerberos](#terminal-sign-in-with-kerberos-cmsmcp-login)); only headless Chromium is installed. Playwright warns that the OS is not officially supported and installs its Ubuntu build, which works on lxplus. The session lasts up to 24 h; run `login` again when tools answer `AUTH_REQUIRED`.
+- **lxplus tools:** they keep an SSH ControlMaster socket in the state directory, and AFS refuses Unix sockets. You are already on lxplus, so the wrapper leaves `CMSMCP_LXPLUS_USER` unset.
+- **Grid (optional):** `voms-proxy-init -voms cms -valid 192:00 -out ~/x509up_u$(id -u)`. The default `/tmp` proxy exists only on the node where it was made; the wrapper uses the AFS copy and puts `/cvmfs/cms.cern.ch/common` (`dasgoclient`) on `PATH`.
+- **Updating:** `git pull`, then rerun the `uv sync` line with the same `UV_*` variables.
 
 ## Auth and bootstrap tools
 
