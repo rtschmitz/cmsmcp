@@ -17,7 +17,13 @@ from cmsmcp.auth.kerberos import (
 )
 from cmsmcp.config.settings import Settings
 from cmsmcp.contracts.errors import InvalidSessionError
-from cmsmcp.login import make_otp_provider, normalise_code, run
+from cmsmcp.login import (
+    make_device_chooser,
+    make_otp_provider,
+    normalise_code,
+    pick_device,
+    run,
+)
 
 LOGIN_URL = "https://auth.cern.ch/auth/realms/cern/protocol/openid-connect/auth?client_id=x"
 BROKER_HREF = "/auth/realms/cern/broker/kerberos/login?client_id=x&session_code=s"
@@ -308,13 +314,62 @@ async def test_interactive_prompt_reprompts_and_shows_errors() -> None:
     assert "6-digit" in said[1]
 
 
+# --- authenticator-app choice -------------------------------------------------
+
+DEVICES = ["laptop", "pixel8"]
+
+
+def test_pick_device_accepts_default_number_or_name() -> None:
+    assert pick_device("", DEVICES, 0) == 0
+    assert pick_device("2", DEVICES, 0) == 1
+    assert pick_device(" PIX ", DEVICES, 0) == 1
+    for bad in ("3", "0", "tablet"):
+        assert pick_device(bad, DEVICES, 0) is None
+    assert pick_device("phone", ["work phone", "old phone"], 0) is None  # ambiguous
+
+
+async def test_device_chooser_lists_apps_and_reprompts() -> None:
+    answers = iter(["7", "pixel"])
+    said: list[str] = []
+    choose = make_device_chooser(
+        None, interactive=True, prompt=lambda _: next(answers), say=said.append
+    )
+    assert await choose(DEVICES, 0) == 1
+    assert "  1) laptop" in said and "  2) pixel8" in said
+    assert any("number from 1 to 2" in line for line in said)
+    assert said[-1] == "Code from: pixel8"
+
+
+async def test_device_chooser_enter_keeps_default() -> None:
+    choose = make_device_chooser(None, interactive=True, prompt=lambda _: "", say=lambda _: None)
+    assert await choose(DEVICES, 1) == 1
+
+
+async def test_device_flag_answers_without_prompt() -> None:
+    def no_prompt(_: str) -> str:
+        raise AssertionError("must not prompt")
+
+    choose = make_device_chooser("pixel", interactive=True, prompt=no_prompt, say=lambda _: None)
+    assert await choose(DEVICES, 0) == 1
+    with pytest.raises(KerberosLoginError) as excinfo:
+        await make_device_chooser("tablet", interactive=True, say=lambda _: None)(DEVICES, 0)
+    assert "laptop, pixel8" in (excinfo.value.instructions or "")
+
+
+async def test_device_chooser_without_terminal_keeps_cern_default() -> None:
+    said: list[str] = []
+    choose = make_device_chooser(None, interactive=False, say=said.append)
+    assert await choose(DEVICES, 0) == 0
+    assert "--device" in said[-1]
+
+
 # --- CLI --------------------------------------------------------------------
 
 
 def _collector_factory(state: dict[str, Any] | Exception) -> Any:
     calls: list[int] = []
 
-    def factory(_provider: Any) -> Any:
+    def factory(_provider: Any, **_kwargs: Any) -> Any:
         async def collect(_settings: Settings, _timeout: int | None) -> dict[str, Any]:
             calls.append(1)
             if isinstance(state, Exception):

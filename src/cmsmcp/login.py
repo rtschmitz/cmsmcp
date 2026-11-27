@@ -11,17 +11,25 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import re
 import sys
 from collections.abc import Callable, Sequence
 from datetime import datetime
 
-from cmsmcp.auth.kerberos import KerberosLoginError, OtpProvider, make_kerberos_collector
+from cmsmcp.auth.kerberos import (
+    DeviceChooser,
+    KerberosLoginError,
+    OtpProvider,
+    make_kerberos_collector,
+)
 from cmsmcp.auth.service import AuthService, StorageStateCollector
 from cmsmcp.config.settings import Settings
 from cmsmcp.contracts.errors import CMSMCPError, InvalidSessionError
 
 _CODE_PATTERN = re.compile(r"\d{6,8}")
+# Default authenticator app (part of its CERN label) when --device is not given.
+DEVICE_ENV = "CMSMCP_OTP_DEVICE"
 
 
 def normalise_code(raw: str) -> str:
@@ -69,6 +77,60 @@ def make_otp_provider(
     return provide
 
 
+def pick_device(answer: str, names: Sequence[str], default: int) -> int | None:
+    """Resolve a typed choice: empty = default, a 1-based number, or part of a name."""
+    answer = answer.strip()
+    if not answer:
+        return default
+    if answer.isdigit():
+        index = int(answer) - 1
+        return index if 0 <= index < len(names) else None
+    matches = [i for i, name in enumerate(names) if answer.lower() in name.lower()]
+    return matches[0] if len(matches) == 1 else None
+
+
+def make_device_chooser(
+    wanted: str | None,
+    *,
+    interactive: bool,
+    prompt: Callable[[str], str] = input,
+    say: Callable[[str], None] = print,
+) -> DeviceChooser:
+    """Ask which authenticator app the code comes from (accounts with several).
+
+    ``wanted`` (``--device`` / ``CMSMCP_OTP_DEVICE``) answers without a prompt;
+    otherwise the terminal lists the apps; without a terminal, CERN's
+    pre-selection is kept and named.
+    """
+
+    async def choose(names: list[str], default: int) -> int:
+        if wanted:
+            index = pick_device(wanted, names, default)
+            if index is None:
+                raise KerberosLoginError(
+                    f"Authenticator app {wanted!r} does not match exactly one of yours",
+                    instructions=f"Registered on your CERN account: {', '.join(names)}.",
+                )
+        elif not interactive:
+            index = default
+        else:
+            say("Authenticator apps registered on your CERN account:")
+            for number, name in enumerate(names, start=1):
+                say(f"  {number}) {name}")
+            while True:
+                raw = await asyncio.to_thread(
+                    prompt, f"Which app will you take the code from? [{default + 1}]: "
+                )
+                index = pick_device(raw, names, default)
+                if index is not None:
+                    break
+                say(f"Enter a number from 1 to {len(names)}, or part of an app name.")
+        say(f"Code from: {names[index]}" + ("" if interactive else " (choose with --device)"))
+        return index
+
+    return choose
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cmsmcp login",
@@ -83,6 +145,14 @@ def _parser() -> argparse.ArgumentParser:
         help="2FA one-time code; use when there is no interactive terminal",
     )
     parser.add_argument(
+        "--device",
+        metavar="NAME",
+        help=(
+            "authenticator app the code comes from, when several are registered "
+            f"(number or part of its name; default: ask, or ${DEVICE_ENV})"
+        ),
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="discard the current session and sign in again even if it is still valid",
@@ -95,7 +165,7 @@ def run(
     *,
     settings: Settings | None = None,
     interactive: bool | None = None,
-    collector_factory: Callable[[OtpProvider], StorageStateCollector] = make_kerberos_collector,
+    collector_factory: Callable[..., StorageStateCollector] = make_kerberos_collector,
 ) -> int:
     """Run the login command; returns a process exit code."""
     args = _parser().parse_args(list(argv))
@@ -107,11 +177,14 @@ def run(
             return 2
     logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = settings or Settings()
-    provider = make_otp_provider(
-        args.otp,
-        interactive=sys.stdin.isatty() if interactive is None else interactive,
+    interactive = sys.stdin.isatty() if interactive is None else interactive
+    provider = make_otp_provider(args.otp, interactive=interactive)
+    chooser = make_device_chooser(
+        args.device or os.environ.get(DEVICE_ENV) or None, interactive=interactive
     )
-    auth = AuthService(settings, collector=collector_factory(provider))
+    auth = AuthService(
+        settings, collector=collector_factory(provider, device_chooser=chooser, say=print)
+    )
     try:
         status = auth.status()
         if status.authenticated and not args.force:

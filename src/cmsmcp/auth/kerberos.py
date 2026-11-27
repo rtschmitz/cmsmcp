@@ -46,6 +46,16 @@ _KERBEROS_REALM_PATH = "/realms/kerberos/"
 _OTP_FIELD = "#otp"
 _OTP_SUBMIT = "#kc-login"
 _OTP_ERROR = "#input-error-otp-code, #input-error, .pf-c-alert__title, .kc-feedback-text"
+# Accounts whose default second factor is a security key / passkey land on a
+# WebAuthn page first. Keycloak's "Try Another Way" form leads to a credential
+# chooser, where the authenticator-app entry brings up the OTP field.
+_TRY_ANOTHER_WAY_FORM = "#kc-select-try-another-way-form"
+_CREDENTIAL_CHOICE = "#kc-select-credential-form button[name=authenticationExecution]"
+_OTP_CHOICE_TEXT = re.compile(r"authenticator app", re.IGNORECASE)
+# With several authenticator apps registered, the code form lists them as
+# radio buttons and pre-selects one; a code is checked only against the
+# selected app, so the user must say which app the code comes from.
+_OTP_DEVICE_RADIO = "#kc-otp-login-form input[name=selectedCredentialId]"
 _STEP_TIMEOUT_SECONDS = 45
 _POLL_SECONDS = 0.5
 MAX_OTP_ATTEMPTS = 3
@@ -53,6 +63,10 @@ MAX_OTP_ATTEMPTS = 3
 # Receives the previous attempt's error text (None on the first attempt) and
 # returns the one-time code to submit.
 OtpProvider = Callable[[str | None], Awaitable[str]]
+# Receives the authenticator-app labels registered on the account and the index
+# of the one to pre-select; returns the index of the app the code will come from.
+DeviceChooser = Callable[[list[str], int], Awaitable[int]]
+Say = Callable[[str], None]
 
 
 class KerberosLoginError(CMSMCPError):
@@ -140,11 +154,54 @@ async def _identity_ready(settings: Settings, context: BrowserContext) -> bool:
     )
 
 
+async def _switch_to_otp(
+    page: Page, *, tried_another_way: bool, say: Say | None = None
+) -> str | None:
+    """Steer a security-key/passkey 2FA page towards the authenticator-app code.
+
+    Returns ``chosen`` after picking the authenticator app in the credential
+    chooser, ``another_way`` after asking for the chooser, or None when the
+    page offers neither. Raises when the account has no authenticator app.
+    """
+    choices = page.locator(_CREDENTIAL_CHOICE)
+    if await choices.count() > 0:
+        methods = [
+            (await choices.nth(i).inner_text()).strip().splitlines()[0].strip()
+            for i in range(await choices.count())
+        ]
+        otp_choice = choices.filter(has_text=_OTP_CHOICE_TEXT)
+        if await otp_choice.count() == 0:
+            raise KerberosLoginError(
+                f"Your CERN account offers no authenticator app for 2FA ({', '.join(methods)})",
+                instructions=(
+                    "Terminal login needs a 6-digit authenticator-app code: register one "
+                    "in your CERN account settings, or use cern_auth_sign_in (visible browser)."
+                ),
+            )
+        if say is not None:
+            say(
+                f"2FA methods on your CERN account: {', '.join(methods)}. Using the "
+                "authenticator app (security keys and passkeys need a browser)."
+            )
+        await otp_choice.first.click()
+        return "chosen"
+    form = page.locator(_TRY_ANOTHER_WAY_FORM)
+    if not tried_another_way and await form.count() > 0:
+        await form.first.evaluate("f => f.submit()")
+        return "another_way"
+    return None
+
+
 async def _wait_for_outcome(
-    settings: Settings, context: BrowserContext, page: Page, start_host: str | None
+    settings: Settings,
+    context: BrowserContext,
+    page: Page,
+    start_host: str | None,
+    say: Say | None = None,
 ) -> str:
     """Return ``done``, ``otp`` or ``kerberos_rejected`` once the page settles."""
     deadline = asyncio.get_running_loop().time() + _STEP_TIMEOUT_SECONDS
+    tried_another_way = False
     while asyncio.get_running_loop().time() < deadline:
         try:
             await page.wait_for_load_state("domcontentloaded", timeout=5_000)
@@ -156,6 +213,11 @@ async def _wait_for_outcome(
                     return "kerberos_rejected"
                 if await page.locator(_OTP_FIELD).count() > 0:
                     return "otp"
+                switched = await _switch_to_otp(page, tried_another_way=tried_another_way, say=say)
+                if switched == "another_way":
+                    tried_another_way = True
+                if switched:
+                    logger.debug("2FA page is not the code form; switching: %s", switched)
         except PlaywrightError:
             logger.debug("Page mid-navigation while waiting for login outcome", exc_info=True)
         await asyncio.sleep(_POLL_SECONDS)
@@ -226,15 +288,55 @@ def validate_kerberos_redirect_host(url: str, identity_host: str) -> None:
         )
 
 
+async def _otp_devices(page: Page) -> tuple[list[str], int]:
+    """Authenticator-app labels on the code form and the index CERN pre-selected."""
+    radios = page.locator(_OTP_DEVICE_RADIO)
+    names: list[str] = []
+    selected = 0
+    for index in range(await radios.count()):
+        radio = radios.nth(index)
+        radio_id = await radio.get_attribute("id")
+        label = page.locator(f'label[for="{radio_id}"]') if radio_id else None
+        text = (await label.first.inner_text()).strip() if label and await label.count() else ""
+        names.append(text or f"authenticator {index + 1}")
+        if await radio.is_checked():
+            selected = index
+    return names, selected
+
+
+async def _select_otp_device(
+    page: Page, chooser: DeviceChooser | None, previous: str | None
+) -> str | None:
+    """Select the authenticator app the code will come from; returns its label.
+
+    Only accounts with several apps get a choice. On a retry the previously
+    chosen app is offered as the default, so a wrong pick can be corrected.
+    """
+    names, default = await _otp_devices(page)
+    if len(names) < 2:  # noqa: PLR2004 - nothing to choose
+        return previous
+    if previous in names:
+        default = names.index(previous)
+    index = default if chooser is None else await chooser(names, default)
+    if not 0 <= index < len(names):
+        raise KerberosLoginError(f"No authenticator app number {index + 1}")
+    await page.locator(_OTP_DEVICE_RADIO).nth(index).check()
+    return names[index]
+
+
 async def _complete_otp(
     settings: Settings,
     context: BrowserContext,
     page: Page,
     start_host: str | None,
     otp_provider: OtpProvider,
+    *,
+    device_chooser: DeviceChooser | None = None,
 ) -> None:
     previous_error: str | None = None
+    device: str | None = None
     for _ in range(MAX_OTP_ATTEMPTS):
+        device = await _select_otp_device(page, device_chooser, device)
         code = await otp_provider(previous_error)
         await page.fill(_OTP_FIELD, code)
         async with page.expect_navigation(wait_until="domcontentloaded", timeout=30_000):
@@ -253,8 +355,15 @@ async def _complete_otp(
 
 def make_kerberos_collector(
     otp_provider: OtpProvider,
+    device_chooser: DeviceChooser | None = None,
+    say: Say | None = None,
 ) -> Callable[[Settings, int | None], Awaitable[dict[str, Any]]]:
-    """Build an :class:`AuthService` storage-state collector for this flow."""
+    """Build an :class:`AuthService` storage-state collector for this flow.
+
+    ``device_chooser`` picks the authenticator app when several are registered
+    (None keeps CERN's pre-selection); ``say`` receives progress notes for the
+    terminal user.
+    """
 
     async def collect(settings: Settings, _timeout_seconds: int | None) -> dict[str, Any]:
         check_kerberos_ticket()
@@ -266,7 +375,7 @@ def make_kerberos_collector(
                 context = await browser.new_context(accept_downloads=False)
                 page = await context.new_page()
                 await _start_kerberos(settings, context, page)
-                outcome = await _wait_for_outcome(settings, context, page, start_host)
+                outcome = await _wait_for_outcome(settings, context, page, start_host, say)
                 if outcome == "kerberos_rejected":
                     raise KerberosLoginError(
                         "CERN did not accept the Kerberos ticket",
@@ -276,7 +385,14 @@ def make_kerberos_collector(
                         ),
                     )
                 if outcome == "otp":
-                    await _complete_otp(settings, context, page, start_host, otp_provider)
+                    await _complete_otp(
+                        settings,
+                        context,
+                        page,
+                        start_host,
+                        otp_provider,
+                        device_chooser=device_chooser,
+                    )
                 return await context.storage_state()
             finally:
                 await _close_resource(context, "kerberos context")
