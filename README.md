@@ -167,9 +167,12 @@ PLAYWRIGHT_BROWSERS_PATH=$B/pw .venv/bin/playwright install --only-shell chromiu
 mkdir -p -m 700 "$B/config" "$B/state"
 ```
 
-Then save this wrapper as `~/private/cmsmcp/cmsmcp` (`chmod 700`), and use it for every `cmsmcp` command and as the MCP server command, so all of them see the same settings:
+Playwright warns that the OS is not officially supported and downloads its Ubuntu build of headless Chromium; that build works on lxplus.
+
+Then create the wrapper `~/private/cmsmcp/cmsmcp`. Use it for every `cmsmcp` command and as the MCP server command, so all of them see the same settings:
 
 ```bash
+cat > ~/private/cmsmcp/cmsmcp <<'EOF'
 #!/bin/bash
 B=$HOME/private/cmsmcp
 export CMSMCP_CONFIG_DIR=$B/config        # secrets + cmsmcp.env
@@ -181,9 +184,18 @@ export CMSMCP_GRID_CERT_FILE=$X509_USER_PROXY
 export CMSMCP_GRID_KEY_FILE=$X509_USER_PROXY
 case ":$PATH:" in *:/cvmfs/cms.cern.ch/common:*) ;; *) PATH=$PATH:/cvmfs/cms.cern.ch/common ;; esac
 exec "$B/app/.venv/bin/cmsmcp" "$@"
+EOF
+chmod 700 ~/private/cmsmcp/cmsmcp
 ```
 
-Register the wrapper's absolute path as a stdio server (`{"mcpServers": {"cmsmcp": {"command": "/afs/cern.ch/user/<u>/<user>/private/cmsmcp/cmsmcp"}}}`; in Claude Code: `claude mcp add -s user cmsmcp -- ~/private/cmsmcp/cmsmcp`), then:
+Register the wrapper as a stdio server. MCP client configs don't expand `~` or `$HOME`, so print the entry with your own path filled in and paste it into your client's config:
+
+```bash
+printf '{"mcpServers": {"cmsmcp": {"command": "%s"}}}\n' "$HOME/private/cmsmcp/cmsmcp"
+claude mcp add -s user cmsmcp -- "$HOME/private/cmsmcp/cmsmcp"    # Claude Code: registers it directly
+```
+
+Then sign in and check:
 
 ```bash
 ~/private/cmsmcp/cmsmcp login                                       # Kerberos ticket + 2FA code
@@ -198,7 +210,7 @@ Why each setting:
 - **Secrets:** AFS ignores Unix mode bits for other users and protects files only through directory ACLs. `~/private` has no `system:anyuser` access, so the config (secrets) and state (SSO cookies) directories go there. The session then works on every lxplus node.
 - **Sign-in:** there is no local display, so use `cmsmcp login` ([Terminal sign-in with Kerberos](#terminal-sign-in-with-kerberos-cmsmcp-login)) instead of the browser sign-in; only Playwright's headless Chromium is needed. The session lasts up to `CMSMCP_SESSION_MAX_AGE_SECONDS` (24 h); run `login` again when tools answer `AUTH_REQUIRED`.
 - **lxplus tools:** they keep an SSH ControlMaster socket in the state directory, and AFS refuses Unix sockets (`Operation not permitted`). On lxplus itself they add nothing, so `CMSMCP_LXPLUS_USER` stays unset.
-- **Grid proxy:** the default `/tmp/x509up_u<uid>` exists only on the node where it was made; the copy in your AFS home works everywhere.
+- **Grid proxy:** the default `/tmp/x509up_u$(id -u)` exists only on the node where it was made; the copy in your AFS home works everywhere.
 - **`dasgoclient`:** lives in `/cvmfs/cms.cern.ch/common`, which may not be on the `PATH` an MCP client starts the server with.
 - **Updating:** `git -C ~/private/cmsmcp/app pull`, then rerun the `uv sync` line with the same three `UV_*` variables; rerun the `playwright install` line if Playwright asks for a newer browser.
 
