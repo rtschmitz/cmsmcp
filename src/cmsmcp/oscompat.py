@@ -1,6 +1,7 @@
-"""Best-effort macOS/Windows accommodations. Linux is the only supported platform.
+"""Platform accommodations: best-effort macOS/Windows, plus AFS homes (CERN lxplus).
 
-Every helper here returns exactly the Linux behaviour on Linux; the branches
+Linux and CERN lxplus are supported. Every helper here returns exactly the
+Linux behaviour on Linux with a regular home directory; the branches
 for macOS (``IS_MACOS``) and Windows (``IS_WINDOWS``) only paper over the
 differences the rest of the code base would otherwise trip on:
 

@@ -106,19 +106,17 @@ Having installed on the systems tools for document manipulation like pandoc, sof
 
 ## Platform support
 
-**Linux is the only supported platform.** macOS and Windows are **unsupported**. They get best-effort accommodations (`src/cmsmcp/oscompat.py`, which returns the unchanged Linux behaviour on Linux), checked only by unit tests that simulate those platforms. Nobody has run cmsmcp on a real Mac or Windows machine, so expect rough edges.
+**Linux and CERN lxplus are supported** (for lxplus, see [CERN lxplus setup](#cern-lxplus-setup)). macOS and Windows are **unsupported**. They get best-effort accommodations (`src/cmsmcp/oscompat.py`), checked only by unit tests that simulate those platforms. Nobody has run cmsmcp on a real Mac or Windows machine, so expect rough edges.
 
-**CERN lxplus:** see [CERN lxplus setup](#cern-lxplus-setup).
-
-| | Linux (supported) | macOS (unsupported) | Windows (unsupported) |
-| --- | --- | --- | --- |
-| Browser SSO, web/API tools | yes | expected to work | expected to work |
-| Config / state directories | `~/.config/cmsmcp`, `~/.local/state/cmsmcp` | same | `%APPDATA%\cmsmcp`, `%LOCALAPPDATA%\cmsmcp` |
-| Secret files | mode 0600; ignored if group/other-readable | same | no POSIX modes: protected only by your user-profile ACLs |
-| TLS trust | system CA store | system store + certifi + bundled CERN root/grid CAs | same as macOS |
-| `cmsmcp login` (Kerberos + 2FA) | `kerberos` extra (builds against `libkrb5-dev`) | prebuilt `gssapi` wheel; Heimdal `kinit` ships with macOS | prebuilt `gssapi` wheel + MIT Kerberos for Windows |
-| lxplus tools, `cmsmcp connect` | yes | expected to work (OpenSSH ControlMaster) | **not available**: run cmsmcp in WSL |
-| Grid proxy, DAS (`dasgoclient`) | yes | if you install the grid tools | no `voms-proxy-init`; use a cert/key or a proxy made elsewhere |
+| | Linux (supported) | CERN lxplus (supported) | macOS (unsupported) | Windows (unsupported) |
+| --- | --- | --- | --- | --- |
+| Browser SSO, web/API tools | yes | yes; sign in with `cmsmcp login` | expected to work | expected to work |
+| Config / state directories | `~/.config/cmsmcp`, `~/.local/state/cmsmcp` | `~/private/cmsmcp/config`, `~/private/cmsmcp/state` | same as Linux | `%APPDATA%\cmsmcp`, `%LOCALAPPDATA%\cmsmcp` |
+| Secret files | mode 0600; ignored if group/other-readable | in `~/private`, which other users cannot read | same as Linux | no POSIX modes: protected only by your user-profile ACLs |
+| TLS trust | system CA store | system CA store | system store + certifi + bundled CERN root/grid CAs | same as macOS |
+| `cmsmcp login` (Kerberos + 2FA) | `kerberos` extra (builds against `libkrb5-dev`) | installed by `contrib/lxplus/setup`; uses your lxplus Kerberos ticket | prebuilt `gssapi` wheel; Heimdal `kinit` ships with macOS | prebuilt `gssapi` wheel + MIT Kerberos for Windows |
+| lxplus tools, `cmsmcp connect` | yes | off (not needed on lxplus) | expected to work (OpenSSH ControlMaster) | **not available**: run cmsmcp in WSL |
+| Grid proxy, DAS (`dasgoclient`) | yes | yes; proxy in `~/x509up_u$(id -u)`, `dasgoclient` from CVMFS | if you install the grid tools | no `voms-proxy-init`; use a cert/key or a proxy made elsewhere |
 
 Bundled CAs: the Windows certificate store and macOS Pythons (uv-managed, python.org) do not include the CERN Grid CA, which signs hosts such as `cms-docdb.cern.ch` and `cmsweb.cern.ch`. On those platforms cmsmcp adds `src/cmsmcp/cern_ca.pem` (CERN Root CA 2/3 and Grid CA 1/2, from [cafiles.cern.ch](https://cafiles.cern.ch/cafiles/), fingerprints in the file header) on top of certifi. Linux keeps using the system store only.
 
@@ -163,7 +161,6 @@ It installs `cmsmcp`, prints the command to register with your MCP client, and o
 
 - Sign in again with `cmsmcp login` when tools answer `AUTH_REQUIRED` (about once a day).
 - For DAS, DQM and Rucio, make your grid proxy with `voms-proxy-init -voms cms -valid 192:00 -out ~/x509up_u$(id -u)`.
-- To update, `git pull` and run `contrib/lxplus/setup` again.
 
 ## Auth and bootstrap tools
 
