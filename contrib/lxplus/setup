@@ -1,0 +1,46 @@
+#!/bin/bash
+# Set up (or update) cmsmcp on CERN lxplus from this clone; see "CERN lxplus setup" in the README.
+# Safe to rerun, e.g. after `git pull`.
+set -euo pipefail
+
+REPO=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)
+WRAPPER=$REPO/contrib/lxplus/cmsmcp-lxplus
+DATA=$HOME/private/cmsmcp                         # ~/private: no access for other users
+export UV_PYTHON_INSTALL_DIR=$DATA/uv-python      # uv's Python has the headers gssapi needs
+export UV_LINK_MODE=copy                          # no hard links across filesystems
+export UV_CACHE_DIR=${UV_CACHE_DIR:-/tmp/$USER/uv-cache}   # keep the download cache off AFS
+
+UV=$(command -v uv || true)
+if [ -z "$UV" ]; then
+    UV=$HOME/.local/bin/uv
+    if [ ! -x "$UV" ]; then
+        echo "==> Installing uv (pip --user)"
+        python3 -m pip install --user --quiet uv
+    fi
+fi
+
+echo "==> Python environment (uv-managed Python 3.12, with the kerberos extra)"
+cd "$REPO"
+"$UV" sync --no-dev --extra kerberos --python 3.12 --python-preference only-managed
+
+echo "==> Headless Chromium (Playwright's 'OS not officially supported' warning is harmless here)"
+PLAYWRIGHT_BROWSERS_PATH=$DATA/pw .venv/bin/playwright install --only-shell chromium
+
+mkdir -p "$DATA/config" "$DATA/state" && chmod 700 "$DATA" "$DATA/config" "$DATA/state"
+
+cat <<EOF
+
+cmsmcp is installed. Register this command as a stdio MCP server in your client:
+  $WRAPPER
+  Claude Code: claude mcp add -s user cmsmcp -- $WRAPPER
+  JSON config: {"mcpServers": {"cmsmcp": {"command": "$WRAPPER"}}}
+Use the same command for everything else, e.g. "$WRAPPER doctor".
+EOF
+
+if [ -t 0 ] && [ -t 1 ]; then
+    read -r -p "Sign in to CERN SSO now (Kerberos ticket + 2FA code)? [Y/n] " answer
+    case ${answer:-y} in
+        [Yy]*) exec "$WRAPPER" login ;;
+    esac
+fi
+echo "Sign in when ready: $WRAPPER login"

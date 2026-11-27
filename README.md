@@ -108,7 +108,7 @@ Having installed on the systems tools for document manipulation like pandoc, sof
 
 **Linux is the only supported platform.** macOS and Windows are **unsupported**. They get best-effort accommodations (`src/cmsmcp/oscompat.py`, which returns the unchanged Linux behaviour on Linux), checked only by unit tests that simulate those platforms. Nobody has run cmsmcp on a real Mac or Windows machine, so expect rough edges.
 
-**CERN lxplus** is Linux and supported; its AFS home and lack of a local browser need a few extra settings, see [CERN lxplus setup](#cern-lxplus-setup).
+**CERN lxplus:** see [CERN lxplus setup](#cern-lxplus-setup).
 
 | | Linux (supported) | macOS (unsupported) | Windows (unsupported) |
 | --- | --- | --- | --- |
@@ -153,24 +153,18 @@ cmsmcp setup
 
 ### CERN lxplus setup
 
-From your clone on lxplus (RHEL 9):
+From your clone on lxplus, run:
 
 ```bash
-python3 -m pip install --user uv
-export UV_PYTHON_INSTALL_DIR=~/private/cmsmcp/uv-python UV_LINK_MODE=copy UV_CACHE_DIR=/tmp/$USER/uv-cache
-~/.local/bin/uv sync --no-dev --extra kerberos --python 3.12 --python-preference only-managed
-PLAYWRIGHT_BROWSERS_PATH=~/private/cmsmcp/pw .venv/bin/playwright install --only-shell chromium
-claude mcp add -s user cmsmcp -- "$PWD/contrib/lxplus/cmsmcp-lxplus"
-contrib/lxplus/cmsmcp-lxplus login
+contrib/lxplus/setup
 ```
 
-- **Wrapper:** `contrib/lxplus/cmsmcp-lxplus` runs the clone's cmsmcp with the settings below. Use it in place of `cmsmcp` for every command (`setup gitlab`, `doctor`, …) and as the MCP server command. Other MCP clients need its absolute path (`echo "$PWD/contrib/lxplus/cmsmcp-lxplus"`), since client configs don't expand `~` or `$HOME`.
-- **Python:** the system `python3.12` has no development headers, so `gssapi` (for `cmsmcp login`) does not build; uv's managed Python has them. The uv cache stays on local `/tmp`, and `UV_LINK_MODE=copy` avoids hard links across filesystems.
-- **Secrets:** AFS protects files through directory ACLs, not mode bits, and `~/private` has no access for other users. The wrapper keeps config (secrets) and state (SSO cookies) in `~/private/cmsmcp`, so the session works on every lxplus node.
-- **Sign-in:** there is no local display, so use `login` ([Terminal sign-in with Kerberos](#terminal-sign-in-with-kerberos-cmsmcp-login)); only headless Chromium is installed. Playwright warns that the OS is not officially supported and installs its Ubuntu build, which works on lxplus. The session lasts up to 24 h; run `login` again when tools answer `AUTH_REQUIRED`.
-- **lxplus tools:** they keep an SSH ControlMaster socket in the state directory, and AFS refuses Unix sockets. You are already on lxplus, so the wrapper leaves `CMSMCP_LXPLUS_USER` unset.
-- **Grid (optional):** `voms-proxy-init -voms cms -valid 192:00 -out ~/x509up_u$(id -u)`. The default `/tmp` proxy exists only on the node where it was made; the wrapper uses the AFS copy and puts `/cvmfs/cms.cern.ch/common` (`dasgoclient`) on `PATH`.
-- **Updating:** `git pull`, then rerun the `uv sync` line with the same `UV_*` variables.
+It installs everything, prints the command to register with your MCP client, and offers to sign in. Then:
+
+- Use `contrib/lxplus/cmsmcp-lxplus` in place of `cmsmcp` for every command, e.g. `contrib/lxplus/cmsmcp-lxplus doctor`.
+- Sign in again with `contrib/lxplus/cmsmcp-lxplus login` when tools answer `AUTH_REQUIRED` (about once a day).
+- For DAS, DQM and Rucio, make your grid proxy with `voms-proxy-init -voms cms -valid 192:00 -out ~/x509up_u$(id -u)`.
+- To update, `git pull` and run `contrib/lxplus/setup` again.
 
 ## Auth and bootstrap tools
 
@@ -571,7 +565,7 @@ directory.web.cern.ch is a Drupal portal whose search tabs delegate to CDS, Indi
 
 ## lxplus tools (Kerberos SSH)
 
-lxplus asks for a second factor after Kerberos, so cmsmcp never logs in unattended: `cmsmcp connect` opens an SSH control master once (kinit + 2FA code) and every tool reuses it for `CMSMCP_LXPLUS_PERSIST` (default 12h). Requires `CMSMCP_LXPLUS_USER` (`cmsmcp setup lxplus`). These tools are for running cmsmcp elsewhere; when cmsmcp itself runs on lxplus, leave them off (see [CERN lxplus setup](#cern-lxplus-setup)).
+lxplus asks for a second factor after Kerberos, so cmsmcp never logs in unattended: `cmsmcp connect` opens an SSH control master once (kinit + 2FA code) and every tool reuses it for `CMSMCP_LXPLUS_PERSIST` (default 12h). Requires `CMSMCP_LXPLUS_USER` (`cmsmcp setup lxplus`). On lxplus itself they are not needed and `contrib/lxplus/cmsmcp-lxplus` turns them off.
 
 - `lxplus_eos_ls`, `lxplus_read_file` (text, bounded), `lxplus_download_file` (into local storage), `lxplus_quota`, `lxplus_condor_queue`, `lxplus_condor_history`, `lxplus_crab_status` (in your CMSSW area).
 - Actions (confirmed): `lxplus_condor_submit` (own area; hash + first lines confirmed), `lxplus_condor_remove`, `lxplus_crab_resubmit` (own area), `lxplus_run` (one shell command; a best-effort filter refuses visibly credential-touching commands).
