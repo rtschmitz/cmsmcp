@@ -29,7 +29,7 @@ Other commands:
 | Command | Purpose |
 | --- | --- |
 | `cmsmcp` | run the MCP server over stdio (what clients launch) |
-| `cmsmcp login [--otp CODE] [--force]` | CERN SSO from the terminal with your Kerberos ticket + 2FA code |
+| `cmsmcp login [--otp CODE] [--device NAME] [--force]` | CERN SSO from the terminal with your Kerberos ticket + 2FA code |
 | `cmsmcp connect` | open the lxplus connection once (Kerberos + 2FA); tools reuse it for 12 h |
 | `cmsmcp status` / `cmsmcp doctor` | what is configured / live test of every connection and token scope |
 | `cmsmcp approve [ID] [--deny]` | review actions an agent parked for your approval |
@@ -108,7 +108,7 @@ Having installed on the systems tools for document manipulation like pandoc, sof
 
 **Linux is the only supported platform.** macOS and Windows are **unsupported**. They get best-effort accommodations (`src/cmsmcp/oscompat.py`, which returns the unchanged Linux behaviour on Linux), checked only by unit tests that simulate those platforms. Nobody has run cmsmcp on a real Mac or Windows machine, so expect rough edges.
 
-**CERN lxplus** (AFS home, no local browser) needs a few extra settings: see [docs/lxplus.md](docs/lxplus.md).
+**CERN lxplus** is Linux and supported; its AFS home and lack of a local browser need a few extra settings, see [CERN lxplus setup](#cern-lxplus-setup).
 
 | | Linux (supported) | macOS (unsupported) | Windows (unsupported) |
 | --- | --- | --- | --- |
@@ -151,6 +151,57 @@ cmsmcp setup
 - **lxplus is not available on native Windows.** cmsmcp keeps one OpenSSH ControlMaster connection open (you enter the 2FA code once), and Windows OpenSSH has no ControlMaster. lxplus tools and `cmsmcp connect` say so and point to WSL. To use them, install cmsmcp inside WSL (Ubuntu) and follow the Linux instructions; your MCP client can launch it with command `wsl.exe` and args `-e bash -lc cmsmcp` (the login shell puts `~/.local/bin` on PATH).
 - **Grid / DAS:** `voms-proxy-init` and `dasgoclient` are not available. Point `CMSMCP_GRID_CERT_FILE`/`CMSMCP_GRID_KEY_FILE` at a passphrase-less proxy made on lxplus for DQM/Rucio, or use WSL.
 
+### CERN lxplus setup
+
+cmsmcp runs on lxplus (RHEL 9) without code changes; this setup puts everything under `~/private/cmsmcp` (about 0.6 GB of home quota). Checked on lxplus9 (RHEL 9.9), November 2026.
+
+```bash
+B=~/private/cmsmcp
+mkdir -p "$B" && cd "$B"
+git clone https://github.com/rtschmitz/cmsmcp app
+python3 -m pip install --user uv          # uv goes to ~/.local/bin
+export UV_PYTHON_INSTALL_DIR=$B/uv-python UV_LINK_MODE=copy UV_CACHE_DIR=/tmp/$USER/uv-cache
+cd app
+~/.local/bin/uv sync --no-dev --extra kerberos --python 3.12 --python-preference only-managed
+PLAYWRIGHT_BROWSERS_PATH=$B/pw .venv/bin/playwright install --only-shell chromium
+mkdir -p -m 700 "$B/config" "$B/state"
+```
+
+Then save this wrapper as `~/private/cmsmcp/cmsmcp` (`chmod 700`), and use it for every `cmsmcp` command and as the MCP server command, so all of them see the same settings:
+
+```bash
+#!/bin/bash
+B=$HOME/private/cmsmcp
+export CMSMCP_CONFIG_DIR=$B/config        # secrets + cmsmcp.env
+export CMSMCP_STATE_DIR=$B/state          # SSO cookies, audit log, downloads
+export PLAYWRIGHT_BROWSERS_PATH=$B/pw     # headless Chromium
+unset CMSMCP_LXPLUS_USER                  # lxplus SSH tools: no Unix sockets on AFS
+export X509_USER_PROXY=$HOME/x509up_u$(id -u)   # grid proxy on AFS
+export CMSMCP_GRID_CERT_FILE=$X509_USER_PROXY
+export CMSMCP_GRID_KEY_FILE=$X509_USER_PROXY
+case ":$PATH:" in *:/cvmfs/cms.cern.ch/common:*) ;; *) PATH=$PATH:/cvmfs/cms.cern.ch/common ;; esac
+exec "$B/app/.venv/bin/cmsmcp" "$@"
+```
+
+Register the wrapper's absolute path as a stdio server (`{"mcpServers": {"cmsmcp": {"command": "/afs/cern.ch/user/<u>/<user>/private/cmsmcp/cmsmcp"}}}`; in Claude Code: `claude mcp add -s user cmsmcp -- ~/private/cmsmcp/cmsmcp`), then:
+
+```bash
+~/private/cmsmcp/cmsmcp login                                       # Kerberos ticket + 2FA code
+voms-proxy-init -voms cms -valid 192:00 -out ~/x509up_u$(id -u)     # optional: DAS, DQM, Rucio
+~/private/cmsmcp/cmsmcp setup gitlab                                # optional tokens, see Quick start
+~/private/cmsmcp/cmsmcp doctor
+```
+
+Why each setting:
+
+- **Python:** the system `python3.12` has no development headers, so `gssapi` (needed by `cmsmcp login`) does not build; uv's managed Python has them. `UV_CACHE_DIR` on local `/tmp` keeps the download cache off AFS, and `UV_LINK_MODE=copy` avoids hard links across filesystems.
+- **Secrets:** AFS ignores Unix mode bits for other users and protects files only through directory ACLs. `~/private` has no `system:anyuser` access, so the config (secrets) and state (SSO cookies) directories go there. The session then works on every lxplus node.
+- **Sign-in:** there is no local display, so use `cmsmcp login` ([Terminal sign-in with Kerberos](#terminal-sign-in-with-kerberos-cmsmcp-login)) instead of the browser sign-in; only Playwright's headless Chromium is needed. The session lasts up to `CMSMCP_SESSION_MAX_AGE_SECONDS` (24 h); run `login` again when tools answer `AUTH_REQUIRED`.
+- **lxplus tools:** they keep an SSH ControlMaster socket in the state directory, and AFS refuses Unix sockets (`Operation not permitted`). On lxplus itself they add nothing, so `CMSMCP_LXPLUS_USER` stays unset.
+- **Grid proxy:** the default `/tmp/x509up_u<uid>` exists only on the node where it was made; the copy in your AFS home works everywhere.
+- **`dasgoclient`:** lives in `/cvmfs/cms.cern.ch/common`, which may not be on the `PATH` an MCP client starts the server with.
+- **Updating:** `git -C ~/private/cmsmcp/app pull`, then rerun the `uv sync` line with the same three `UV_*` variables; rerun the `playwright install` line if Playwright asks for a newer browser.
+
 ## Auth and bootstrap tools
 
 - `cern_auth_sign_in` — opens a visible browser at the CERN account page, waits for an authenticated Keycloak identity cookie, and stores only allowlisted cookies locally. Only the login itself is visible: per-service Bearer tokens are minted lazily on first API use and cookie-only site sessions are re-warmed on demand from the stored identity. No localStorage, cookie, or token values are returned to the MCP client.
@@ -169,9 +220,17 @@ uv sync --extra kerberos          # once; builds python-gssapi (needs libkrb5-de
 kinit <username>@CERN.CH
 uv run --extra kerberos cmsmcp login              # prompts: CERN 2FA code:
 uv run --extra kerberos cmsmcp login --otp 123456 # no interactive terminal (e.g. Claude Code `!`)
+uv run --extra kerberos cmsmcp login --otp 123456 --device phone  # same, several authenticator apps
 ```
 
-`--force` replaces a still-valid session (like `cern_auth_reauthenticate`, it discards the old session first). Only authenticator-app codes are supported; accounts using a hardware security key need the browser sign-in. The SPNEGO token is generated with python-gssapi rather than the browser's own Negotiate support (stock Linux Chrome fails to initialise GSSAPI) and is attached only to the Kerberos realm request on the SSO host. Success requires the browser to return to the start site — Keycloak sets the identity cookie before the 2FA step finishes, so the cookie alone is not proof of login.
+`--force` replaces a still-valid session (like `cern_auth_reauthenticate`, it discards the old session first).
+
+The 2FA step needs a code from an authenticator app:
+
+- If the account's default second factor is a security key or passkey, the login follows "Try Another Way" to the authenticator app and lists the account's 2FA methods. An account with no authenticator app registered needs the browser sign-in.
+- If several authenticator apps are registered, CERN checks the code against one selected app only, so a valid code from another app is rejected. The login lists the apps and asks which one the code comes from (Enter keeps CERN's default; after a rejected code it asks again). `--device NAME` (a number or part of the app's name) or `CMSMCP_OTP_DEVICE` answers without a prompt; without either and without a terminal, CERN's pre-selected app is used.
+
+The SPNEGO token is generated with python-gssapi rather than the browser's own Negotiate support (stock Linux Chrome fails to initialise GSSAPI) and is attached only to the Kerberos realm request on the SSO host. Success requires the browser to return to the start site — Keycloak sets the identity cookie before the 2FA step finishes, so the cookie alone is not proof of login.
 
 MCP does not guarantee client-side call order, so cmsmcp enforces authentication server-side. Every adapter tool returns a structured `AUTH_REQUIRED` result until `cern_auth_sign_in` completes.
 
@@ -542,7 +601,7 @@ directory.web.cern.ch is a Drupal portal whose search tabs delegate to CDS, Indi
 
 ## lxplus tools (Kerberos SSH)
 
-lxplus asks for a second factor after Kerberos, so cmsmcp never logs in unattended: `cmsmcp connect` opens an SSH control master once (kinit + 2FA code) and every tool reuses it for `CMSMCP_LXPLUS_PERSIST` (default 12h). Requires `CMSMCP_LXPLUS_USER` (`cmsmcp setup lxplus`).
+lxplus asks for a second factor after Kerberos, so cmsmcp never logs in unattended: `cmsmcp connect` opens an SSH control master once (kinit + 2FA code) and every tool reuses it for `CMSMCP_LXPLUS_PERSIST` (default 12h). Requires `CMSMCP_LXPLUS_USER` (`cmsmcp setup lxplus`). These tools are for running cmsmcp elsewhere; when cmsmcp itself runs on lxplus, leave them off (see [CERN lxplus setup](#cern-lxplus-setup)).
 
 - `lxplus_eos_ls`, `lxplus_read_file` (text, bounded), `lxplus_download_file` (into local storage), `lxplus_quota`, `lxplus_condor_queue`, `lxplus_condor_history`, `lxplus_crab_status` (in your CMSSW area).
 - Actions (confirmed): `lxplus_condor_submit` (own area; hash + first lines confirmed), `lxplus_condor_remove`, `lxplus_crab_resubmit` (own area), `lxplus_run` (one shell command; a best-effort filter refuses visibly credential-touching commands).
@@ -603,6 +662,7 @@ Configuration uses environment variables with the `CMSMCP_` prefix. Common setti
 | `CMSMCP_CONFIRM_MODE` | `elicit` | `elicit`, `approve` (always `cmsmcp approve`), or `deny` |
 | `CMSMCP_AUDIT_ENABLED` | `true` | Local audit log of tool calls |
 | `CMSMCP_LXPLUS_USER` / `CMSMCP_LXPLUS_HOST` / `CMSMCP_LXPLUS_PERSIST` | unset / `lxplus.cern.ch` / `12h` | lxplus SSH target and connection lifetime |
+| `CMSMCP_OTP_DEVICE` | unset | Authenticator app `cmsmcp login` uses when several are registered (number or part of its name; `--device` overrides) |
 | `CMSMCP_RUCIO_ACCOUNT` | lxplus user | Rucio account |
 
 Service tokens come only from these namespaced environment variables or the private secret files written by `cmsmcp setup`, and are injected by the trusted HTTP layer; they are never accepted as tool arguments, mixed into unrelated origins, or written to logs.
