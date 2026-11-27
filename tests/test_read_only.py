@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import httpx
@@ -13,7 +14,7 @@ from cmsmcp.config.settings import Settings
 from cmsmcp.contracts.errors import PolicyViolationError
 from cmsmcp.net.client import SafeHttpClient
 from cmsmcp.net.safety import browser_request_allowed, check_read_only_post, check_read_only_url
-from cmsmcp.policy import Effect
+from cmsmcp.policy import READ_EFFECTS
 from cmsmcp.registry import CmsMcpServer
 
 
@@ -25,7 +26,7 @@ async def test_every_registered_tool_is_read_only(tmp_path: Path) -> None:
         assert tool.annotations is not None, tool.name
         assert tool.annotations.read_only_hint is True, tool.name
         assert tool.annotations.destructive_hint is False, tool.name
-    assert {info.effect for info in server.tool_infos.values()} <= set(Effect)
+    assert {info.effect for info in server.tool_infos.values()} <= READ_EFFECTS
 
 
 def test_registry_refuses_a_non_read_tool(tmp_path: Path) -> None:
@@ -38,10 +39,6 @@ def test_registry_refuses_a_non_read_tool(tmp_path: Path) -> None:
         @server.tool(name="x_post", effect="act-external")  # type: ignore[arg-type]
         async def x_post() -> str:
             return "never"
-
-
-def test_no_write_path_on_the_http_client() -> None:
-    assert not hasattr(SafeHttpClient, "request_action")
 
 
 @pytest.mark.parametrize(
@@ -60,6 +57,14 @@ def test_no_write_path_on_the_http_client() -> None:
         "https://auth.cern.ch/auth/realms/cern/protocol/openid-connect/logout",
         "https://indico.cern.ch/logout/",
         "https://example.cern.ch/items/1?_method=DELETE",
+        # Judged as requested: dot segments are resolved first (literal or encoded).
+        "https://cms-pdmv-prod.web.cern.ch/mcm/restapi/requests/get/../soft_reset/P",
+        "https://cms-pdmv-prod.web.cern.ch/mcm/restapi/chained_requests/get/%2e%2e/flow/X",
+        "https://cms-docdb.cern.ch/cgi-bin/DocDB/ProcessDocumentAdd/x?y=1",
+        "https://cern.service-now.com/logout.do",
+        "https://its.cern.ch/jira/secure/Logout!default.jspa",
+        "https://twiki.cern.ch/twiki/bin/view/CMS/X?logout=1",
+        "https://twiki.cern.ch./twiki/bin/statistics/CMS",
     ],
 )
 def test_state_changing_urls_are_always_refused(url: str) -> None:
@@ -80,6 +85,7 @@ def test_state_changing_urls_are_always_refused(url: str) -> None:
         "https://cms-docdb.cern.ch/cgi-bin/DocDB/RetrieveFile?docid=1",
         "https://indico.cern.ch/event/1/attachments/2/3/update.pdf",
         "https://gitlab.cern.ch/api/v4/projects/1/repository/files/src%2Fdelete.py/raw",
+        "https://twiki.cern.ch/twiki/bin/view/CMS/./Sub/../Topic",
     ],
 )
 def test_reads_pass_even_strictly(url: str) -> None:
@@ -115,6 +121,7 @@ def test_only_registered_post_endpoints() -> None:
         "https://cern.service-now.com/api/now/table/incident",
         "https://cmsrunregistry.web.cern.ch/api/runs/edit",
         "https://cmsrunregistry.web.cern.ch/api/runs_filtered_ordered/../runs/edit",
+        "https://evil.web.cern.ch/api/now/sp/search",  # right path, wrong host
     ):
         with pytest.raises(PolicyViolationError):
             check_read_only_post(url)
@@ -212,3 +219,110 @@ def test_browser_allows_reads_and_sign_in_only() -> None:
     assert not allowed("POST", "https://app.cern.ch/cb", "code=x&state=y&comment=hi", nav=True)
     assert not allowed("POST", "https://app.cern.ch/acs", "RelayState=x", nav=True)
     assert not allowed("POST", "https://app.cern.ch/search", '{"q": "x"}')
+    # Registered read-only POST queries pass, on their own host only.
+    assert allowed("POST", "https://cmsrunregistry.web.cern.ch/api/runs_filtered_ordered", "{}")
+    assert allowed("POST", "https://xsecdb-xsdb-official.app.cern.ch/api/search", "{}")
+    assert not allowed("POST", "https://evil.web.cern.ch/api/search", "{}")
+    assert not allowed(
+        "POST", "https://its.cern.ch/jira/rest/issueNav/latest/preferredSearchLayout"
+    )
+    # EDMS GWT RPC: read-named methods only.
+    rpc = "https://edms.cern.ch/ui/Edms/utilService"
+    read = "7|0|4|https://edms.cern.ch/ui/Edms/|H|cern.edms.ui.client.service.UtilService|getEdmsConfig|1"
+    assert allowed("POST", rpc, read)
+    assert not allowed("POST", rpc, read.replace("getEdmsConfig", "saveDocument"))
+    assert not allowed("POST", rpc, read.replace("getEdmsConfig", "getaway"))
+    assert not allowed("POST", "https://edms.cern.ch/ui/Edms/remote_logging", read)
+    assert not allowed("POST", rpc, None)
+
+
+async def test_real_browser_checks_every_redirect_hop(tmp_path: Path) -> None:
+    """Chromium follows redirects without routing the next hop; the guard must not."""
+    import threading  # noqa: PLC0415
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # noqa: PLC0415
+
+    from playwright.async_api import async_playwright  # noqa: PLC0415
+
+    from cmsmcp.auth import browser  # noqa: PLC0415
+
+    settings = Settings(state_dir=tmp_path)
+    if settings.browser_executable is None:
+        pytest.skip("no Chromium/Chrome installed")
+    hits: list[str] = []
+    page = b"""<p>final</p><img src="/img"><script>
+      fetch('/data').then(r => r.json()).then(j => document.body.append('xhr:' + j.v));
+    </script>"""
+    redirects = {
+        "/start": "/hop",
+        "/hop": "/page",
+        "/evil": "/mcm/restapi/requests/approve/NAV",
+        "/img": "/mcm/restapi/requests/approve/IMG",
+        "/data": "/data2",
+    }
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            hits.append(self.path)
+            signed_in = "r=1" in (self.headers.get("Cookie") or "")
+            if self.path == "/round" and not signed_in:  # sign-in round trip
+                self.send_response(302)
+                self.send_header("Location", "/login?next=/round")
+                self.end_headers()
+                return
+            if self.path.startswith("/login"):
+                self.send_response(302)
+                self.send_header("Set-Cookie", "r=1; Path=/")
+                self.send_header("Location", "/round")
+                self.end_headers()
+                return
+            if self.path in redirects:
+                self.send_response(302)
+                if self.path == "/start":
+                    self.send_header("Set-Cookie", "s=1; Path=/")
+                self.send_header("Location", redirects[self.path])
+                self.end_headers()
+                return
+            self.send_response(200)
+            json_body = self.path == "/data2"
+            self.send_header("Content-Type", "application/json" if json_body else "text/html")
+            self.end_headers()
+            self.wfile.write(b'{"v": 42}' if json_body else page)
+
+        def log_message(self, *_: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    # The rules key on the McM host name; serve "McM" from the local server.
+    original = browser.browser_request_allowed
+
+    def as_mcm(method: str, url: str, **kwargs: object) -> bool:
+        return original(method, url.replace(base, "https://cms-pdmv-prod.web.cern.ch"), **kwargs)
+
+    try:
+        browser.browser_request_allowed = as_mcm  # type: ignore[assignment]
+        async with async_playwright() as playwright:
+            chromium = await browser._launch_browser(settings, playwright, headless=True)
+            context = await chromium.new_context(service_workers="block")
+            guard = await browser._install_read_only_guard(context, settings)
+            tab = await context.new_page()
+            await tab.goto(f"{base}/start", wait_until="domcontentloaded")
+            await asyncio.wait_for(guard.settled.wait(), 10)
+            await tab.wait_for_load_state("domcontentloaded")
+            await tab.wait_for_function("document.body.innerText.includes('xhr:42')")
+            assert tab.url == f"{base}/page"
+            # A chain that ends on the URL it started at (sign-in) settles too.
+            guard.settled.clear()
+            await tab.goto(f"{base}/round", wait_until="domcontentloaded")
+            await asyncio.wait_for(guard.settled.wait(), 10)
+            await tab.wait_for_function("document.body.innerText.includes('final')")
+            assert tab.url == f"{base}/round"
+            with pytest.raises(Exception, match="ERR_BLOCKED_BY_CLIENT"):
+                await tab.goto(f"{base}/evil")
+            await chromium.close()
+    finally:
+        browser.browser_request_allowed = original  # type: ignore[assignment]
+        server.shutdown()
+    assert not [hit for hit in hits if "approve" in hit], hits
+    assert {"/start", "/hop", "/page", "/img", "/data", "/data2"} <= set(hits)

@@ -56,20 +56,13 @@ _SESSION_WARM_URLS = (
 )
 _ANONYMOUS_NOTE = (
     "No live Jira session: results are limited to anonymous/public visibility. "
-    "Sign in again (cern_auth_sign_in / `cmsmcp login`) or add a Jira token "
-    "(`cmsmcp setup jira`) for "
-    "restricted projects and issues."
+    "Sign in again (cern_auth_sign_in / `cmsmcp login`) for restricted projects and "
+    "issues."
 )
 
 
-def _token_headers(client: SafeHttpClient) -> dict[str, str] | None:
-    """Personal access token (``CMSMCP_JIRA_TOKEN``) as Bearer, when configured."""
-    token = getattr(client.settings, "jira_token", None)
-    return {"Authorization": f"Bearer {token}"} if token else None
-
-
 async def _get(client: SafeHttpClient, url: str, params: dict[str, Any] | None = None) -> Any:
-    return await client.request("GET", url, params=params, service_headers=_token_headers(client))
+    return await client.request("GET", url, params=params)
 
 
 def _person(fields: Any) -> str | None:

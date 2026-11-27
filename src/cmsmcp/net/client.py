@@ -433,7 +433,7 @@ class SafeHttpClient:
     ) -> SafeResponse:
         """Shared POST core: registered read-only query endpoints only.
 
-        The URL must match :data:`~cmsmcp.net.safety.READ_ONLY_POST_PATHS` and
+        The URL must match :data:`~cmsmcp.net.safety.READ_ONLY_POSTS` (host + path) and
         the call site's host allowlist. A redirect is followed as a body-less
         GET (what browsers do after a 302/303), never re-posted.
         """

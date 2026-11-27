@@ -57,7 +57,7 @@ COMMANDS = ("login", "connect", "setup", "status", "doctor", "logout", "audit", 
 # `cmsmcp setup <step>` to run, so nothing is asked up front.
 # Three tiers: `cmsmcp setup` = CERN SSO only; `--tokens` adds the long-lived
 # read tokens (GitLab, Indico, GitHub); `--all` adds Kerberos, lxplus, grid,
-# Rucio and the personal-data policy (Jira and Mattermost reads use the SSO session).
+# Rucio and the personal-data policy (Jira and Mattermost use the SSO session).
 CORE_STEPS = ("sso",)
 TOKEN_STEPS = tuple(t.name for t in TOKENS)
 FULL_ONLY_STEPS = ("kerberos", "lxplus", "grid", "rucio", "policy")

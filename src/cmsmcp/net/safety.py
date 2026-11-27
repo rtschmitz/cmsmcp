@@ -116,7 +116,9 @@ def redact_url(url: str) -> str:
 _LOGOUT_SEGMENTS = frozenset({"logout", "log_out", "log-out", "logoff", "signout", "sign_out"})
 _MCM_READ_ACTIONS = frozenset({"get", "output", "produces", "search", "fetch"})
 _TWIKI_READ_SCRIPTS = frozenset({"view", "viewauth", "viewfile", "rdiff", "oops"})
-_DOCDB_WRITE_MARKERS = ("process", "upload", "delete", "clone", "modify", "addfiles")
+_DOCDB_WRITE_MARKERS = (
+    "process", "upload", "delete", "clone", "modify", "addfiles", "confirm", "signrevision",
+)  # fmt: skip
 _METHOD_OVERRIDE_KEYS = frozenset({"_method", "x-http-method-override"})
 _ACTION_QUERY_KEYS = frozenset({"action", "do", "op", "cmd", "command", "method", "_action"})
 _ACTION_VERBS = frozenset(
@@ -128,6 +130,24 @@ _ACTION_VERBS = frozenset(
         "unpublish", "unregister", "unsubscribe", "update", "upload", "vote",
     }
 )  # fmt: skip
+
+
+def _resolved_segments(path: str) -> list[str]:
+    """Decoded, lower-cased path segments with ``.``/``..`` resolved.
+
+    Rules must judge the path that is actually requested: httpx and browsers
+    resolve dot segments before sending, and servers resolve encoded ones
+    (``%2e%2e``), so ``get/../approve`` is checked as ``approve``.
+    """
+    resolved: list[str] = []
+    for part in path.split("/"):
+        segment = unquote(part).lower()
+        if segment == "..":
+            if resolved:
+                resolved.pop()
+        elif segment and segment != ".":
+            resolved.append(segment)
+    return resolved
 
 
 def _refuse_state_change(url: str, why: str) -> PolicyViolationError:
@@ -142,7 +162,7 @@ def _refuse_state_change(url: str, why: str) -> PolicyViolationError:
 
 def _service_write_reason(host: str, segments: list[str]) -> str | None:
     """Why a GET to this service path would change state, or None."""
-    if _LOGOUT_SEGMENTS.intersection(segments):
+    if _LOGOUT_SEGMENTS.intersection(re.split(r"[.!;]", segment)[0] for segment in segments):
         return "logout endpoint"
     if host.startswith("cms-pdmv") and "restapi" in segments:
         index = segments.index("restapi")
@@ -154,20 +174,23 @@ def _service_write_reason(host: str, segments: list[str]) -> str | None:
         if script not in _TWIKI_READ_SCRIPTS:
             return f"TWiki script {script!r} is not a read"
     if "docdb" in host and "cgi-bin" in segments:
-        script = segments[-1]
-        if any(marker in script for marker in _DOCDB_WRITE_MARKERS):
-            return f"DocDB script {script!r} is not a read"
+        # Every segment after cgi-bin: CGI PATH_INFO may follow the script name.
+        for script in segments[segments.index("cgi-bin") + 1 :]:
+            if any(marker in script for marker in _DOCDB_WRITE_MARKERS):
+                return f"DocDB script {script!r} is not a read"
     return None
 
 
 def check_read_only_url(url: str, *, strict: bool = False) -> str:
     """Refuse URLs known to change server state even on GET; return ``url``."""
     parsed = urlsplit(url)
-    host = (parsed.hostname or "").lower()
-    segments = [unquote(part).lower() for part in parsed.path.split("/") if part]
+    host = (parsed.hostname or "").rstrip(".").lower()
+    segments = _resolved_segments(parsed.path)
     query = [(key.lower(), value.lower()) for key, value in parse_qsl(parsed.query)]
     if any(key in _METHOD_OVERRIDE_KEYS and value not in {"get", "head"} for key, value in query):
         raise _refuse_state_change(url, "HTTP method override in the query")
+    if any(key in _LOGOUT_SEGMENTS for key, _ in query):
+        raise _refuse_state_change(url, "logout parameter")
     if reason := _service_write_reason(host, segments):
         raise _refuse_state_change(url, reason)
     if strict:
@@ -179,24 +202,48 @@ def check_read_only_url(url: str, *, strict: bool = False) -> str:
 
 
 # ------------------------------------------------------------ read-only POSTs
-# A few services expose their *search* only as POST. These are the only POST
-# endpoints cmsmcp ever calls (path patterns; the host is additionally bound by
-# each call site's allowlist). Adding one is a reviewed change: it must be a
-# query that never changes server state.
-READ_ONLY_POST_PATHS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"/api/now/sp/search"),  # ServiceNow service-portal search
-    re.compile(r"/api/v4/teams/[A-Za-z0-9]+/posts/search"),  # Mattermost post search
-    re.compile(r"/api/(runs|datasets)_filtered_ordered"),  # Run Registry filtered lists
-    re.compile(r"/api/lumisections/rr_lumisection_ranges(_by_component)?"),  # RR LS ranges
-    re.compile(r"/Elog/json\.do"),  # CMS Online E-Log search (DataTables)
-    re.compile(r"/webcenter/portal/cmsonline/pages_common/shiftlist"),  # shift list date
+# Some services only answer queries by POST. These (host, path) pairs are the
+# only POST endpoints the HTTP client may call and the page browser may let a
+# page call; each was checked to be a pure query. Adding one is a reviewed
+# change: it must never change server state.
+READ_ONLY_POSTS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("cern.service-now.com", re.compile(r"/api/now/sp/search")),  # portal search
+    ("mattermost.web.cern.ch", re.compile(r"/api/v4/teams/[A-Za-z0-9]+/posts/search")),
+    ("cmsrunregistry.web.cern.ch", re.compile(r"/api/(runs|datasets)_filtered_ordered")),
+    (
+        "cmsrunregistry.web.cern.ch",
+        re.compile(r"/api/lumisections/rr_lumisection_ranges(_by_component)?"),
+    ),
+    ("cmsonline.cern.ch", re.compile(r"/Elog/json\.do")),  # E-Log search (DataTables)
+    ("cmsonline.cern.ch", re.compile(r"/webcenter/portal/cmsonline/pages_common/shiftlist")),
+    # Loaded by pages rendered with cern_fetch_page:
+    ("xsecdb-xsdb-official.app.cern.ch", re.compile(r"/api/search")),  # XSDB table query
+    ("its.cern.ch", re.compile(r"/jira/rest/wrm/2\.0/resources")),  # script/style bundles
+    ("its.cern.ch", re.compile(r"/jira/rest/issueNav/1/issueTable")),  # issue list query
 )
+# EDMS's GWT UI sends every call to a few RPC endpoints; the method name in the
+# body says what it does, so only read-named methods pass.
+_EDMS_RPC_PATH = re.compile(r"/ui/Edms/[A-Za-z]+Service")
+_RPC_READ_METHOD = re.compile(r"(get|find|search|list|load|count|is|has)[A-Z]\w*")
+_GWT_METHOD_FIELD = 6  # version|flags|count|module base|policy|interface|METHOD|...
+
+
+def _is_read_only_post(url: str, body: str | None = None) -> bool:
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").rstrip(".").lower()
+    if any(host == h and pattern.fullmatch(parsed.path) for h, pattern in READ_ONLY_POSTS):
+        return True
+    if host == "edms.cern.ch" and _EDMS_RPC_PATH.fullmatch(parsed.path) and body:
+        fields = body.split("|")
+        return len(fields) > _GWT_METHOD_FIELD and bool(
+            _RPC_READ_METHOD.fullmatch(fields[_GWT_METHOD_FIELD])
+        )
+    return False
 
 
 def check_read_only_post(url: str) -> str:
     """Allow a POST only to a registered read-only query endpoint."""
-    path = urlsplit(url).path
-    if not any(pattern.fullmatch(path) for pattern in READ_ONLY_POST_PATHS):
+    if not _is_read_only_post(url):
         raise PolicyViolationError(
             f"POST to {redact_url(url)} is not a registered read-only query endpoint"
         )
@@ -221,11 +268,13 @@ def browser_request_allowed(
 ) -> bool:
     """Whether the read-only page browser may send this request.
 
-    Reads (GET/HEAD/OPTIONS) pass unless the URL is a known state change. The
-    only POSTs that pass are the sign-in plumbing a page needs to load: the
-    Keycloak token endpoint (PKCE code exchange / refresh) and a navigation
-    that posts back nothing but a SAML or OIDC sign-in response. Everything
-    else (form submits, XHR writes, PUT/PATCH/DELETE) is blocked.
+    Reads (GET/HEAD/OPTIONS) pass unless the URL is a known state change.
+    POSTs pass only to registered read-only query endpoints
+    (:data:`READ_ONLY_POSTS`, EDMS read-named RPC methods) or as the sign-in
+    plumbing a page needs to load: the Keycloak token endpoint (PKCE code
+    exchange / refresh) and a navigation that posts back nothing but a SAML or
+    OIDC sign-in response. Everything else (form submits, other XHR writes,
+    PUT/PATCH/DELETE) is blocked.
     """
     verb = method.upper()
     try:
@@ -238,9 +287,10 @@ def browser_request_allowed(
         return False
     parsed = urlsplit(url)
     host = (parsed.hostname or "").lower()
-    if host in {h.lower() for h in identity_hosts} and parsed.path.endswith(
+    token_endpoint = host in {h.lower() for h in identity_hosts} and parsed.path.endswith(
         "/protocol/openid-connect/token"
-    ):
+    )
+    if token_endpoint or _is_read_only_post(url, post_data):
         return True
     if not navigation or not post_data:
         return False

@@ -8,8 +8,8 @@ Sections (each optional, fetched in parallel, failures reported per section):
 - Mattermost: recent posts mentioning you (direct/group messages only with
   the ``mattermost_dm`` opt-in).
 
-Uses the same credentials as the per-service tools (SSO session, plus the
-GitLab/Jira tokens when configured). Read-only.
+Uses the same credentials as the per-service tools (SSO session, plus
+the GitLab token when configured). Read-only.
 """
 
 from __future__ import annotations
@@ -134,7 +134,7 @@ async def jira_section(client: SafeHttpClient, limit: int) -> dict[str, Any]:
             out[name] = f"unavailable ({_why(result)})"
             continue
         if result.note:
-            out["note"] = "anonymous Jira session: sign in or add a Jira token"
+            out["note"] = "anonymous Jira session: sign in again (`cmsmcp login`)"
         out[name] = [
             {
                 "title": f"{i.get('key')} {i.get('summary')}",

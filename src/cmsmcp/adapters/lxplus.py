@@ -52,9 +52,8 @@ def check_path(path: str) -> str:
     """Accept only absolute /eos, /afs or /cvmfs paths without traversal or credentials.
 
     Applies to every lxplus tool, reads included: a read that returned a key,
-    keytab, ticket cache or proxy would hand the credential to the model with
-    no confirmation (the path is shell-quoted and never globbed, so this path
-    denylist holds, unlike the best-effort one for free-form commands).
+    keytab, ticket cache or proxy would hand the credential to the model (the
+    path is shell-quoted and never globbed, so this path denylist holds).
     """
     cleaned = path.strip()
     if not _PATH_RE.fullmatch(cleaned) or "/../" in f"{cleaned}/" or cleaned.endswith("/.."):
@@ -85,8 +84,8 @@ def own_areas(settings: Settings) -> tuple[str, ...]:
 
 def check_own_path(settings: Settings, path: str) -> str:
     """A path inside the user's own areas: anything that *executes* project
-    files (CRAB/SCRAM environments, submit files) must not run code from
-    another user's readable directory."""
+    files (the CRAB/SCRAM environment of ``crab status``) must not run code
+    from another user's readable directory."""
     cleaned = check_path(path)
     if not settings.lxplus_user or not f"{cleaned}/".startswith(own_areas(settings)):
         raise PolicyViolationError(

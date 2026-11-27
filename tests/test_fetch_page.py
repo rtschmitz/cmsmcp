@@ -70,12 +70,16 @@ class _FakePage:
     async def title(self) -> str:
         return self._title
 
+    async def wait_for_load_state(self, state: str) -> None:
+        assert state == "domcontentloaded"
+
 
 class _FakeAPIResponse:
     """Stand-in for the Playwright APIRequestContext response."""
 
     def __init__(self, url: str, content_type: str) -> None:
         self.url = url
+        self.status = 200
         self.headers = {"content-type": content_type}
 
 
@@ -83,7 +87,8 @@ class _FakeRequest:
     def __init__(self, response: _FakeAPIResponse | None) -> None:
         self._response = response
 
-    async def get(self, _url: str) -> _FakeAPIResponse:
+    async def get(self, _url: str, max_redirects: int | None = None) -> _FakeAPIResponse:
+        assert max_redirects == 0
         if self._response is None:
             raise PlaywrightError("api request failed")
         return self._response
@@ -106,6 +111,7 @@ class _FakeContext:
     async def route(self, pattern: str, handler: Any) -> None:
         assert pattern == "**/*"
         self.route_handler = handler
+        handler.settled.set()  # the fake page "loads" without routed requests
 
     async def route_web_socket(self, pattern: str, handler: Any) -> None:
         assert pattern == "**/*"
@@ -158,24 +164,48 @@ def _patch_playwright(
     return fake_context
 
 
+class _FakeFrame:
+    parent_frame = None
+
+
 class _FakeRouteRequest:
     def __init__(self, method: str, url: str, body: str | None, *, navigation: bool) -> None:
         self.method = method
         self.url = url
         self.post_data = body
+        self.frame = _FakeFrame()
         self._navigation = navigation
 
     def is_navigation_request(self) -> bool:
         return self._navigation
 
 
-class _FakeRoute:
-    def __init__(self, request: _FakeRouteRequest) -> None:
-        self.request = request
-        self.outcome: str | None = None
+class _FakeFetched:
+    def __init__(self, status: int, location: str | None) -> None:
+        self.status = status
+        self.headers = {"location": location} if location else {}
 
-    async def continue_(self) -> None:
-        self.outcome = "continued"
+
+class _FakeRoute:
+    """Route whose server answers from ``redirects`` (url -> Location), else 200."""
+
+    def __init__(self, request: _FakeRouteRequest, redirects: dict[str, str]) -> None:
+        self.request = request
+        self.redirects = redirects
+        self.fetched: list[str] = []
+        self.outcome: str | None = None
+        self.body: str | None = None
+
+    async def fetch(self, *, url: str | None = None, max_redirects: int, **_: Any) -> Any:
+        assert max_redirects == 0
+        target = url or self.request.url
+        self.fetched.append(target)
+        location = self.redirects.get(target)
+        return _FakeFetched(302 if location else 200, location)
+
+    async def fulfill(self, *, body: str | None = None, **_: Any) -> None:
+        self.outcome = "fulfilled"
+        self.body = body
 
     async def abort(self, _code: str) -> None:
         self.outcome = "aborted"
@@ -190,21 +220,41 @@ async def test_fetch_page_text_browser_is_read_only(monkeypatch, tmp_path: Path)
     assert context.options["service_workers"] == "block"
     assert context.route_handler is not None and context.socket_handler is not None
 
-    async def outcome(method: str, url: str, body: str | None = None, *, nav: bool = False) -> str:
-        route = _FakeRoute(_FakeRouteRequest(method, url, body, navigation=nav))
+    async def run(
+        method: str, url: str, body: str | None = None, *, nav: bool = False, redirects=None
+    ) -> _FakeRoute:
+        route = _FakeRoute(_FakeRouteRequest(method, url, body, navigation=nav), redirects or {})
         await context.route_handler(route)
-        return str(route.outcome)
+        return route
 
-    assert await outcome("GET", "https://app.cern.ch/api/items") == "continued"
+    async def outcome(method: str, url: str, body: str | None = None, *, nav: bool = False) -> str:
+        return str((await run(method, url, body, nav=nav)).outcome)
+
+    assert await outcome("GET", "https://app.cern.ch/api/items") == "fulfilled"
     assert await outcome("POST", "https://app.cern.ch/api/items", '{"a":1}') == "aborted"
     assert await outcome("DELETE", "https://app.cern.ch/api/items/1") == "aborted"
     assert await outcome("POST", "https://app.cern.ch/form", "title=x", nav=True) == "aborted"
     assert await outcome("GET", "https://app.cern.ch/api/items/1/delete") == "aborted"
     token = "https://auth.cern.ch/auth/realms/cern/protocol/openid-connect/token"
-    assert await outcome("POST", token, "grant_type=authorization_code&code=x") == "continued"
+    assert await outcome("POST", token, "grant_type=authorization_code&code=x") == "fulfilled"
     saml = "SAMLResponse=abc&RelayState=xyz"
-    assert await outcome("POST", "https://app.cern.ch/saml/acs", saml, nav=True) == "continued"
+    assert await outcome("POST", "https://app.cern.ch/saml/acs", saml, nav=True) == "fulfilled"
     assert await outcome("POST", "https://app.cern.ch/saml/acs", saml) == "aborted"
+
+    # Redirect hops are checked too (Chromium would follow them unrouted).
+    approve = "https://cms-pdmv-prod.web.cern.ch/mcm/restapi/requests/approve/X"
+    start = "https://app.cern.ch/r"
+    for nav in (True, False):
+        route = await run("GET", start, nav=nav, redirects={start: approve})
+        assert route.outcome == "aborted" and route.fetched == [start]
+    # A subresource follows its checked hops and gets the final response.
+    hop, final = "https://app.cern.ch/hop", "https://app.cern.ch/data"
+    route = await run("GET", start, redirects={start: hop, hop: final})
+    assert route.outcome == "fulfilled" and route.fetched == [start, hop, final]
+    # A navigation gets a script hop to the checked target, routed again later.
+    route = await run("GET", start, nav=True, redirects={start: hop})
+    assert route.outcome == "fulfilled" and route.fetched == [start]
+    assert route.body is not None and f'location.replace("{hop}")' in route.body
 
 
 async def test_fetch_page_text_waits_for_marker(monkeypatch, tmp_path: Path) -> None:

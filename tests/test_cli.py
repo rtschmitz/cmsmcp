@@ -112,8 +112,8 @@ def test_status_rows_cover_every_credential(tmp_path: Path) -> None:
     rows = asyncio.run(gather_status(Settings(state_dir=tmp_path), live=False))
     names = [name for name, _ in rows]
     assert names[:4] == ["sso", "kerberos", "grid", "lxplus"]
-    assert {"gitlab", "indico", "github", "actions"} <= set(names)
-    assert "jira" not in names  # no Jira token: Jira reads use the SSO session
+    assert {"gitlab", "indico", "github", "policy"} <= set(names)
+    assert "jira" not in names  # Jira reads use the SSO session; no token
     assert "mattermost" not in names  # Mattermost uses the SSO session only
     assert "sso" in format_status(rows)
 

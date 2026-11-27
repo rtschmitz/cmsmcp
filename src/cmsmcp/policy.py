@@ -39,7 +39,9 @@ class Effect(StrEnum):
     READ_PERSONAL = "read-personal"
 
 
-READ_EFFECTS = frozenset(Effect)
+# Explicit, not frozenset(Effect): a new effect member must not become
+# registrable by accident (the registry refuses anything outside this set).
+READ_EFFECTS = frozenset({Effect.READ, Effect.READ_PERSONAL})
 
 
 class PersonalSourceDisabledError(CMSMCPError):

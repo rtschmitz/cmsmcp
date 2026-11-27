@@ -249,7 +249,7 @@ def build_server(  # noqa: C901 - per-tool registration blocks dominate the bran
             "without it the page is read once its text stabilizes. auth_divert=true "
             "means the page landed on the SSO login: the stored session is stale, "
             "re-run cern_auth_sign_in. Read-only: the page cannot submit forms or send "
-            "POST/PUT/DELETE requests, so content a page loads by POST stays missing."
+            "writes; only registered read-only POST queries pass."
         ),
     )
     async def cern_fetch_page(

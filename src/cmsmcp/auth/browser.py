@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from playwright.async_api import (
     Browser,
@@ -653,43 +654,124 @@ _FETCH_STABLE_POLLS = 2
 _AUTHFLOW_HOST = "authflow.cern.ch"
 
 
-async def _install_read_only_guard(context: BrowserContext, settings: Settings) -> None:
-    """Make an agent-directed page render read-only.
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_MAX_GUARD_REDIRECTS = 10
+# A page load may legitimately pass through several SSO redirect chains; a
+# redirect loop must still end.
+_MAX_NAVIGATION_HOPS = 30
+
+
+def _hop_page(url: str) -> str:
+    """A document that navigates to ``url`` (already checked) by script."""
+    target = json.dumps(url).replace("</", "<\\/")
+    return f"<!doctype html><script>location.replace({target})</script>"
+
+
+class _ReadOnlyGuard:
+    """Route handler that makes an agent-directed page render read-only.
 
     The page runs its own JavaScript with the user's session, so the HTTP
     layer's GET-only rule does not reach it. Every request the page makes is
     checked with :func:`~cmsmcp.net.safety.browser_request_allowed`: reads
-    pass, the SSO sign-in plumbing passes, and everything that could write
-    (form submits, XHR POST/PUT/PATCH/DELETE, known state-changing GET URLs)
-    is aborted. WebSockets are closed, since their messages cannot be
-    inspected as requests. The context must be created with
-    ``service_workers="block"`` so no request escapes the route.
-    """
-    identity_hosts = (settings.sso_identity_host, _AUTHFLOW_HOST)
+    pass, registered read-only POST queries and the SSO sign-in plumbing
+    pass, and everything that could write (form submits, other XHR
+    POST/PUT/PATCH/DELETE, known state-changing GET URLs) is aborted.
 
-    async def guard(route: Route) -> None:
+    Redirects: Chromium follows a redirect without passing the next hop
+    through the route (even one the route fulfilled itself), so every request
+    is fetched with ``max_redirects=0`` and each hop is checked. Subresources
+    follow their checked hops here and get the final response. Navigations
+    instead receive a small page that moves to the checked hop by script, so
+    the next hop is a new, routed navigation. ``settled`` is set once the
+    main frame got its final (non-redirect, or refused) answer, so the caller
+    can wait past the script hops; a chain may end on the URL it started at
+    (sign-in round trips), so the URL alone cannot tell.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self.identity_hosts = (settings.sso_identity_host, _AUTHFLOW_HOST)
+        self.navigation_hops = 0
+        self.settled = asyncio.Event()
+
+    def allowed(self, method: str, url: str, post_data: str | None, *, navigation: bool) -> bool:
+        if urlsplit(url).scheme in {"http", "https"} and browser_request_allowed(
+            method,
+            url,
+            post_data=post_data,
+            navigation=navigation,
+            identity_hosts=self.identity_hosts,
+        ):
+            return True
+        logger.debug("Read-only browser blocked %s %s", method, redact_url(url))
+        return False
+
+    async def __call__(self, route: Route) -> None:
         request = route.request
         try:
             post_data = request.post_data
         except (PlaywrightError, UnicodeDecodeError):  # binary body: never a sign-in form
             post_data = None
-        if browser_request_allowed(
-            request.method,
-            request.url,
-            post_data=post_data,
-            navigation=request.is_navigation_request(),
-            identity_hosts=identity_hosts,
-        ):
-            await route.continue_()
+        navigation = request.is_navigation_request()
+        main_frame = navigation and request.frame.parent_frame is None
+        if not self.allowed(request.method, request.url, post_data, navigation=navigation):
+            await route.abort("blockedbyclient")
+            if main_frame:
+                self.settled.set()
             return
-        logger.debug("Read-only browser blocked %s %s", request.method, redact_url(request.url))
-        await route.abort("blockedbyclient")
+        try:
+            outcome = await self._follow(route, post_data, navigation=navigation)
+        except PlaywrightError:
+            logger.debug("Read-only browser fetch failed for %s", redact_url(request.url))
+            outcome = "failed"
+        if outcome in {"refused", "failed"}:
+            await route.abort("blockedbyclient" if outcome == "refused" else "failed")
+        if main_frame and outcome != "hop":
+            self.settled.set()
 
-    async def close_socket(socket: WebSocketRoute) -> None:
-        await socket.close()
+    async def _follow(self, route: Route, post_data: str | None, *, navigation: bool) -> str:
+        """Fetch, check and resolve redirects: ``final``, ``hop`` or ``refused``."""
+        request = route.request
+        method, url = request.method, request.url
+        response = await route.fetch(max_redirects=0)
+        for _ in range(_MAX_GUARD_REDIRECTS):
+            location = response.headers.get("location")
+            if response.status not in _REDIRECT_STATUSES or not location:
+                await route.fulfill(response=response)
+                return "final"
+            url = urljoin(url, location)
+            if response.status not in {307, 308}:
+                method, post_data = "GET", None
+            if not self.allowed(method, url, post_data, navigation=navigation):
+                return "refused"
+            if navigation:
+                self.navigation_hops += 1
+                if self.navigation_hops > _MAX_NAVIGATION_HOPS:
+                    return "refused"
+                if request.frame.parent_frame is None:
+                    self.settled.clear()
+                await route.fulfill(status=200, content_type="text/html", body=_hop_page(url))
+                return "hop"
+            response = await route.fetch(
+                url=url, method=method, post_data=post_data, max_redirects=0
+            )
+        return "refused"
 
+
+async def _close_socket(socket: WebSocketRoute) -> None:
+    await socket.close()
+
+
+async def _install_read_only_guard(context: BrowserContext, settings: Settings) -> _ReadOnlyGuard:
+    """Route every request of ``context`` through :class:`_ReadOnlyGuard` (returned).
+
+    WebSockets are closed (their
+    messages cannot be inspected as requests). The context must be created
+    with ``service_workers="block"`` so no request escapes the route.
+    """
+    guard = _ReadOnlyGuard(settings)
     await context.route("**/*", guard)
-    await context.route_web_socket("**/*", close_socket)
+    await context.route_web_socket("**/*", _close_socket)
+    return guard
 
 
 async def _poll_body_text(
@@ -760,8 +842,21 @@ async def _binary_download_payload(
     """
     if not any(marker in navigation_error for marker in _NAVIGATION_ABORT_MARKERS):
         return None
+    # context.request is not routed: follow and check each redirect hop here.
+    target = url
     try:
-        response = await context.request.get(url)
+        for _ in range(_MAX_GUARD_REDIRECTS):
+            response = await context.request.get(target, max_redirects=0)
+            location = response.headers.get("location")
+            if response.status not in _REDIRECT_STATUSES or not location:
+                break
+            target = urljoin(target, location)
+            if urlsplit(target).scheme not in {"http", "https"} or not browser_request_allowed(
+                "GET", target, post_data=None, navigation=True, identity_hosts=()
+            ):
+                return None
+        else:
+            return None
     except PlaywrightError:
         return None
     content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
@@ -813,7 +908,7 @@ async def fetch_page_text(
             context = await browser.new_context(
                 storage_state=storage_state, accept_downloads=False, service_workers="block"
             )
-            await _install_read_only_guard(context, settings)
+            guard = await _install_read_only_guard(context, settings)
             page = await context.new_page()
             try:
                 await page.goto(
@@ -821,7 +916,11 @@ async def fetch_page_text(
                     wait_until="domcontentloaded",
                     timeout=min(30_000, timeout_seconds * 1000),
                 )
-            except PlaywrightError as exc:
+                # Redirects arrive as script hops (see _ReadOnlyGuard): wait for
+                # the main frame's final document.
+                await asyncio.wait_for(guard.settled.wait(), timeout=min(30, timeout_seconds))
+                await page.wait_for_load_state("domcontentloaded")
+            except (PlaywrightError, TimeoutError) as exc:
                 binary = await _binary_download_payload(context, url, str(exc))
                 if binary is not None:
                     return binary, await context.storage_state()

@@ -6,7 +6,7 @@ One place answers "what can this installation reach right now?":
 - ``kerberos``: a ``kinit`` ticket (lxplus, EOS, silent SSO renewal).
 - ``lxplus``: password-less SSH to lxplus over the Kerberos ticket.
 - ``grid``: X.509 user certificate / VOMS proxy (DAS, DQM, Rucio).
-- personal read tokens: GitLab, Indico, GitHub.
+- personal read tokens: GitLab, Indico, GitHub (Jira and Mattermost use the SSO session).
 
 Checks never print or return secret values. ``quick`` checks are local (file
 presence, ``klist``); ``live`` checks contact the service (``cmsmcp doctor``).
@@ -163,9 +163,9 @@ def check_token(settings: Settings, spec: TokenSpec) -> Check:
     return Check(OK, f"token set ({source})")
 
 
-def check_actions(settings: Settings) -> Check:
+def check_policy(settings: Settings) -> Check:
     personal = ", ".join(settings.personal_sources) or "none"
-    return Check(OK, f"read-only; personal: {personal}")
+    return Check(OK, f"read-only; personal data opted in: {personal}")
 
 
 # ----------------------------------------------------------------- live checks
@@ -273,7 +273,7 @@ async def gather_status(settings: Settings, *, live: bool) -> list[tuple[str, Ch
     else:
         rows.append(("lxplus", Check(MISSING, "CMSMCP_LXPLUS_USER not set")))
     rows += [(spec.name, check_token(settings, spec)) for spec in TOKENS]
-    rows.append(("actions", check_actions(settings)))
+    rows.append(("policy", check_policy(settings)))
     return rows
 
 

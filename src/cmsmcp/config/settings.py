@@ -63,7 +63,6 @@ SECRET_FIELDS = (
     "indico_api_token",
     "gitlab_token",
     "github_token",
-    "jira_token",
     "hltinfo_token",
     "glance_alcm_token",
     "glance_membership_token",
@@ -214,7 +213,6 @@ class Settings(BaseSettings):
 
     # --- Extra personal tokens (setup wizard) --------------------------------
     github_token: str | None = None
-    jira_token: str | None = None
     sso_start_url: HttpUrl = HttpUrl(DEFAULT_SSO_START_URL)
     sso_identity_host: str = DEFAULT_SSO_IDENTITY_HOST
     sso_timeout_seconds: int = Field(
